@@ -1,0 +1,22 @@
+# Render blueprint for adx.in — a Next.js web service beside the backend.
+# Create the service from this file (Render → New → Blueprint) or by hand with
+# the same build and start commands. Point adx.in at it when you are ready;
+# GitHub Pages keeps serving the old static site until then.
+services:
+  - type: web
+    name: adx-website
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://adx-backendv1.onrender.com/api/v1
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://adx.in
+      # Same OAuth web client id as the backend's GOOGLE_CLIENT_ID; empty hides the Google button.
+      - key: NEXT_PUBLIC_GOOGLE_CLIENT_ID
+        sync: false

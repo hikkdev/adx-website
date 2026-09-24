@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * adx.in — DR 12 website tokens.
+ * Figma "ADX" file, page "DR 12 - Website": ink #141518, muted #77787d,
+ * line #eaeae7, red #bd2020 (buttons), bright red #e32227 (chips), paper
+ * #eeeae2 (footer), ground #f8f8f6 (page). The shadcn names below point at
+ * the same colours so the copied primitives draw in the website's palette.
+ */
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 225 9% 9%;
+        --canvas: 60 12% 97%;
+        --card: 0 0% 100%;
+        --card-foreground: 225 9% 9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 225 9% 9%;
+        --primary: 0 71% 43%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 60 8% 96%;
+        --secondary-foreground: 225 9% 9%;
+        --muted: 60 8% 96%;
+        --muted-foreground: 230 3% 48%;
+        --accent: 60 8% 96%;
+        --accent-foreground: 225 9% 9%;
+        --destructive: 4 76% 40%;
+        --destructive-foreground: 0 0% 98%;
+        --success: 153 73% 28%;
+        --success-soft: 150 33% 93%;
+        --warning: 34 100% 30%;
+        --warning-soft: 40 100% 94%;
+        --danger: 4 76% 40%;
+        --danger-soft: 4 86% 97%;
+        --info: 217 80% 42%;
+        --info-soft: 214 95% 96%;
+        --border: 60 7% 91%;
+        --input: 60 7% 91%;
+        --ring: 0 71% 43%;
+        --radius: 0.625rem;
+    }
+
+    * {
+        @apply border-border;
+    }
+
+    html {
+        @apply antialiased;
+        overflow-x: clip;
+    }
+
+    body {
+        @apply bg-ground text-ink;
+        font-feature-settings: "cv11", "ss01";
+    }
+}

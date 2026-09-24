@@ -1,0 +1,75 @@
+/* The static site's stylesheet, scoped to the home page it was written for.
+   Generated from public/styles.css; the home is kept exactly as it was. */
+:root {
+  --red: #e40209;
+  --red-dark: #bd2020;
+  --ink: #0f0f0f;
+  --muted: #5b6168;
+  --line: #e6e8eb;
+  --ground: #ffffff;
+  --sunk: #f6f7f8;
+  --max: 1080px;
+}
+.legacy-home *{ box-sizing: border-box; }
+.legacy-home{ scroll-behavior: smooth; }
+.legacy-home{
+  margin: 0;
+  font-family: Inter, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--ground);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.legacy-home a{ color: var(--red); text-decoration: none; }
+.legacy-home a:hover{ text-decoration: underline; }
+.legacy-home .wrap{ max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+
+.legacy-home header.site{
+  border-bottom: 1px solid var(--line);
+  background: var(--ground);
+  position: sticky; top: 0; z-index: 10;
+}
+.legacy-home header.site .wrap{ display: flex; align-items: center; justify-content: space-between; height: 64px; }
+.legacy-home header.site img{ height: 26px; display: block; }
+.legacy-home header.site nav a{ color: var(--ink); margin-left: 22px; font-size: 15px; }
+.legacy-home header.site nav a:hover{ color: var(--red); text-decoration: none; }
+
+.legacy-home .hero{ padding: 72px 0 56px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #fff 0%, var(--sunk) 100%); }
+.legacy-home .hero h1{ font-size: clamp(32px, 5vw, 52px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -0.02em; }
+.legacy-home .hero h1 span{ color: var(--red); }
+.legacy-home .hero p.lead{ font-size: 19px; color: var(--muted); max-width: 640px; margin: 0 0 28px; }
+.legacy-home .cta{ display: inline-block; background: var(--red); color: #fff; padding: 12px 22px; border-radius: 10px; font-weight: 600; }
+.legacy-home .cta:hover{ background: var(--red-dark); text-decoration: none; }
+.legacy-home .cta.secondary{ background: #fff; color: var(--ink); border: 1px solid var(--line); margin-left: 10px; }
+
+.legacy-home section{ padding: 56px 0; border-bottom: 1px solid var(--line); }
+.legacy-home section h2{ font-size: 28px; margin: 0 0 8px; letter-spacing: -0.01em; }
+.legacy-home section p.sub{ color: var(--muted); margin: 0 0 28px; max-width: 680px; }
+.legacy-home .grid{ display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.legacy-home .card{ border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: #fff; }
+.legacy-home .card h3{ margin: 0 0 8px; font-size: 18px; }
+.legacy-home .card p{ margin: 0; color: var(--muted); font-size: 15px; }
+.legacy-home .step{ display: flex; gap: 14px; align-items: flex-start; }
+.legacy-home .step .n{ flex: 0 0 34px; height: 34px; border-radius: 50%; background: var(--red); color: #fff; font-weight: 700; display: grid; place-items: center; }
+.legacy-home table.plain{ border-collapse: collapse; width: 100%; font-size: 15px; }
+.legacy-home table.plain th, .legacy-home table.plain td{ text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.legacy-home table.plain th{ color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.legacy-home footer.site{ padding: 36px 0 48px; color: var(--muted); font-size: 14px; }
+.legacy-home footer.site .wrap{ display: flex; flex-wrap: wrap; gap: 18px 28px; justify-content: space-between; align-items: center; }
+.legacy-home footer.site nav a{ color: var(--muted); margin-right: 18px; }
+.legacy-home footer.site img{ height: 20px; opacity: 0.9; }
+
+.legacy-home .doc{ padding: 48px 0 72px; }
+.legacy-home .doc h1{ font-size: 34px; margin: 0 0 6px; letter-spacing: -0.02em; }
+.legacy-home .doc p.meta{ color: var(--muted); margin: 0 0 32px; }
+.legacy-home .doc h2{ font-size: 21px; margin: 32px 0 10px; }
+.legacy-home .doc p, .legacy-home .doc li{ font-size: 16px; }
+.legacy-home .doc ul{ padding-left: 22px; }
+.legacy-home .doc .box{ background: var(--sunk); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+
+@media (max-width: 640px) {
+  header.site nav a { margin-left: 14px; font-size: 14px; }
+  .legacy-home .hero{ padding: 48px 0 40px; }
+  .legacy-home .cta.secondary{ margin-left: 0; margin-top: 10px; }
+}
