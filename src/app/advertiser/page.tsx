@@ -2,108 +2,170 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PageHeading, Panel } from "@/components/workspace/page-heading";
-import { messageOf } from "@/lib/api-client";
-import { campaignsService, type CampaignSummary } from "@/services/campaigns";
-import { rupees } from "@/services/browse";
+import { btnOutline, btnPrimary, Cell, LoadingLine, ErrorPanel, Segmented, StatusChip, TablePanel, Td, Th, useAsync } from "@/components/advertiser/bits";
+import {
+    advertiserWorkspace,
+    CAMPAIGN_CHIPS,
+    campaignContinueHref,
+    campaignStatusLabel,
+    campaignsSummary,
+    chipStatuses,
+    dateRange,
+    daysLabel,
+    rupees,
+    spacesLine,
+    type CampaignDetail,
+    type CampaignListPage,
+    type CampaignRow,
+} from "@/services/advertiser-workspace";
 
-type State = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; campaigns: CampaignSummary[] };
+type Chip = (typeof CAMPAIGN_CHIPS)[number]["value"];
 
 /**
- * DR 12 · 03 · 04 · Advertiser · First campaign (5204:61913), and board 07's
- * Campaigns list once there are any. The first-campaign card is the design's
- * empty state, not a separate page: the same route, the same sidebar.
+ * DR 12 · 07 · 01 · Campaigns (5204:75477) — the workspace home: the count
+ * line, the three-way pill, the book as a table, and "Explore ad spaces"
+ * under it. With no campaign at all it is 03 · 04's first-campaign card
+ * (5204:61913) on the same route.
  */
 export default function AdvertiserHome() {
-    const [state, setState] = React.useState<State>({ kind: "loading" });
+    return (
+        <React.Suspense fallback={<LoadingLine>Loading your campaigns…</LoadingLine>}>
+            <CampaignsPage />
+        </React.Suspense>
+    );
+}
 
-    React.useEffect(() => {
-        let cancelled = false;
-        campaignsService
-            .list()
-            .then((page) => {
-                if (!cancelled) setState({ kind: "ready", campaigns: page.items });
-            })
-            .catch((caught: unknown) => {
-                if (!cancelled) setState({ kind: "error", message: messageOf(caught, "Could not read your campaigns.") });
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, []);
+interface Loaded {
+    page: CampaignListPage;
+    /** The detail of each scheduled row, so the status column can say "Artwork in review" the way the frame does. */
+    details: Record<string, CampaignDetail>;
+}
 
-    if (state.kind === "loading") {
-        return <p className="text-sm text-dim">Loading your campaigns…</p>;
-    }
+async function loadCampaigns(chip: Chip): Promise<Loaded> {
+    const page = await advertiserWorkspace.campaigns({ status: chipStatuses(chip), sort: "NEWEST" });
+    const scheduled = page.items.filter((row) => row.status === "SCHEDULED").slice(0, 12);
+    const details: Record<string, CampaignDetail> = {};
+    await Promise.all(
+        scheduled.map(async (row) => {
+            try {
+                details[row.id] = await advertiserWorkspace.campaign(row.id);
+            } catch {
+                /* The row's own status stands. */
+            }
+        })
+    );
+    return { page, details };
+}
+
+function CampaignsPage() {
+    const router = useRouter();
+    const pathname = usePathname();
+    const params = useSearchParams();
+    const chipParam = params.get("chip");
+    const chip: Chip = CAMPAIGN_CHIPS.some((c) => c.value === chipParam) ? (chipParam as Chip) : "ALL";
+    const state = useAsync(`campaigns:${chip}`, () => loadCampaigns(chip), "Could not read your campaigns.");
+
+    const setChip = (next: Chip) => {
+        router.replace(next === "ALL" ? pathname : `${pathname}?chip=${next}`);
+    };
+
+    if (state.kind === "loading") return <LoadingLine>Loading your campaigns…</LoadingLine>;
     if (state.kind === "error") {
         return (
             <>
                 <PageHeading title="Campaigns" />
-                <Panel className="mt-6">
-                    <p className="text-sm font-medium text-ink">Could not read your campaigns</p>
-                    <p className="mt-1 text-sm text-dim">{state.message}</p>
-                </Panel>
+                <ErrorPanel title="Could not read your campaigns" message={state.message} />
             </>
         );
     }
 
-    if (state.campaigns.length === 0) return <FirstCampaign />;
+    const { page, details } = state.value;
+    const everything = Object.values(page.counts ?? {}).reduce((sum, n) => sum + n, 0);
+    if (chip === "ALL" && page.items.length === 0 && everything === 0) return <FirstCampaign />;
 
-    const drafts = state.campaigns.filter((c) => c.status === "DRAFT").length;
     return (
         <>
             <PageHeading
                 title="Campaigns"
-                subtitle={`${state.campaigns.length} campaign${state.campaigns.length === 1 ? "" : "s"}${drafts ? ` · ${drafts} draft${drafts === 1 ? "" : "s"}` : ""}`}
                 actions={
-                    <Link href="/advertiser/campaigns/new" className="rounded-md bg-brand px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#a51b1b]">
+                    <Link href="/advertiser/campaigns/new" className={btnPrimary}>
                         Create campaign
                     </Link>
                 }
             />
-            <Panel className="mt-6 p-0">
-                <table className="w-full text-sm">
-                    <thead>
-                        <tr className="border-b border-line text-left text-xs font-medium text-dim">
-                            <th className="px-6 py-3">Campaign</th>
-                            <th className="px-6 py-3">Schedule</th>
-                            <th className="px-6 py-3 text-right">Total paid</th>
-                            <th className="px-6 py-3">Status</th>
-                            <th className="px-6 py-3" />
+            <p className="mt-5 text-sm text-dim">{campaignsSummary(page.counts, page.total)}</p>
+            <div className="mt-3">
+                <Segmented value={chip} options={CAMPAIGN_CHIPS.map((c) => ({ value: c.value, label: c.label }))} onChange={setChip} />
+            </div>
+
+            <TablePanel className="mt-4">
+                <thead>
+                    <tr>
+                        <Th>Campaign</Th>
+                        <Th>Schedule</Th>
+                        <Th align="right">Total paid</Th>
+                        <Th>Status</Th>
+                        <Th />
+                    </tr>
+                </thead>
+                <tbody>
+                    {page.items.map((row) => (
+                        <CampaignLine key={row.id} row={row} detail={details[row.id]} />
+                    ))}
+                    {page.items.length === 0 && (
+                        <tr>
+                            <Td className="py-8 text-center text-dim" align="left">
+                                <span className="block text-center">{chip === "ACTIVE" ? "No active campaigns right now." : "No completed campaigns yet."}</span>
+                            </Td>
+                            <Td />
+                            <Td />
+                            <Td />
+                            <Td />
                         </tr>
-                    </thead>
-                    <tbody>
-                        {state.campaigns.map((campaign) => (
-                            <tr key={campaign.id} className="border-b border-line last:border-0">
-                                <td className="px-6 py-4">
-                                    <p className="font-medium text-ink">{campaign.name || "Untitled campaign"}</p>
-                                    <p className="text-xs text-dim">{campaign.reference}{campaign.city ? ` · ${campaign.city}` : ""}</p>
-                                </td>
-                                <td className="px-6 py-4 text-ink">
-                                    {campaign.startDate && campaign.endDate ? (
-                                        <>
-                                            {new Date(campaign.startDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })} – {new Date(campaign.endDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                                        </>
-                                    ) : (
-                                        <span className="text-dim">Not scheduled</span>
-                                    )}
-                                </td>
-                                <td className="px-6 py-4 text-right tabular-nums text-ink">{campaign.totalAmount ? rupees(campaign.totalAmount) : "—"}</td>
-                                <td className="px-6 py-4 text-dim">{campaign.status.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase())}</td>
-                                <td className="px-6 py-4 text-right">
-                                    <Link href={`/advertiser/campaigns/${campaign.id}`} className="text-sm font-semibold text-ink hover:text-brand">
-                                        {campaign.status === "DRAFT" ? "Continue draft" : "View campaign"}
-                                    </Link>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </Panel>
+                    )}
+                </tbody>
+            </TablePanel>
+
+            <div className="mt-6 flex justify-end">
+                <Link href="/spaces" className={btnOutline}>
+                    Explore ad spaces
+                </Link>
+            </div>
         </>
     );
 }
 
+function CampaignLine({ row, detail }: { row: CampaignRow; detail?: CampaignDetail }) {
+    const status = campaignStatusLabel(detail ? { status: row.status, creatives: detail.creatives, launchBlockedBy: detail.launchBlockedBy } : { status: row.status });
+    const isDraft = row.status === "DRAFT" || row.status === "PENDING_PAYMENT";
+    const paid = !isDraft && row.total ? rupees(row.total) : "—";
+    const scheduled = row.startDate && row.endDate;
+    return (
+        <tr className="border-t border-line">
+            <Td>
+                <Cell title={<span className="font-medium">{row.name || "Untitled campaign"}</span>} line={row.status === "DRAFT" ? "Draft · Campaign brief saved" : `${row.reference} · ${spacesLine(row.spotCount, row.city)}`} />
+            </Td>
+            <Td>
+                {scheduled ? <Cell title={dateRange(row.startDate, row.endDate)} line={daysLabel(row.startDate, row.endDate)} /> : <Cell title="Not scheduled" line="Choose dates in your brief" />}
+            </Td>
+            <Td align="right" className="tabular-nums">
+                {paid}
+            </Td>
+            <Td>
+                <StatusChip label={status.label} tone={status.tone} pill={false} />
+            </Td>
+            <Td align="right">
+                <Link href={isDraft ? campaignContinueHref(row) : `/advertiser/campaigns/${row.id}`} className="whitespace-nowrap text-sm font-semibold text-ink hover:text-brand">
+                    {isDraft ? "Continue draft" : "View campaign"}
+                </Link>
+            </Td>
+        </tr>
+    );
+}
+
+/** DR 12 · 03 · 04 · Advertiser · First campaign (5204:61913): the empty state, same route, same sidebar. */
 function FirstCampaign() {
     return (
         <>

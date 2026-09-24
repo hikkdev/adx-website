@@ -37,4 +37,14 @@ describe("the cart", () => {
         cart.clear();
         expect(calls).toBe(2);
     });
+
+    it("prints for the advertiser unless told otherwise, and remembers the choice", () => {
+        expect(cart.get().printing).toBe(true);
+        cart.setPrinting(false);
+        expect(cart.get().printing).toBe(false);
+        const stored = JSON.parse(window.localStorage.getItem("adx.web.cart") ?? "{}") as { printing: boolean };
+        expect(stored.printing).toBe(false);
+        cart.clear();
+        expect(cart.get().printing).toBe(true);
+    });
 });

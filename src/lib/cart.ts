@@ -8,8 +8,11 @@ import * as React from "react";
  * DR 12's "Add" on a space card and "Campaign cart" in the navigation hold
  * spaces a visitor is considering — before they have signed in, before a
  * campaign exists. Kept in this browser until the cart is turned into a
- * campaign on the backend (`POST /campaigns` + `PUT /campaigns/:id/spots`),
- * which is the moment it becomes a record the apps and the console see.
+ * campaign on the backend (`POST /campaigns` + `PUT /campaigns/:id/spots`,
+ * see `bookingService.campaignFromCart`), which is the moment it becomes a
+ * record the apps and the console see. The print choice (board 04's
+ * "Printing and installation" card) rides along so the campaign's
+ * `fulfilment` is set from what the person ticked here.
  */
 export interface CartLine {
     listingId: string;
@@ -26,13 +29,15 @@ export interface CartDates {
     to: string | null;
 }
 
-interface CartState {
+export interface CartState {
     lines: CartLine[];
     dates: CartDates;
+    /** "Print for me" (true) or "I will ship my own" — one choice for the campaign, as the backend takes it. */
+    printing: boolean;
 }
 
 const KEY = "adx.web.cart";
-const EMPTY: CartState = { lines: [], dates: { from: null, to: null } };
+const EMPTY: CartState = { lines: [], dates: { from: null, to: null }, printing: true };
 
 let state: CartState | null = null;
 const listeners = new Set<() => void>();
@@ -73,6 +78,9 @@ export const cart = {
     },
     setDates(dates: CartDates) {
         write({ ...read(), dates });
+    },
+    setPrinting(printing: boolean) {
+        write({ ...read(), printing });
     },
     clear() {
         write(EMPTY);

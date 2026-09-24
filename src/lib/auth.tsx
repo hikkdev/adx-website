@@ -4,7 +4,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, onSessionEnded, tokens } from "./api-client";
 import { useCart } from "./cart";
-import { authService, normaliseMobile, type SendOtpResult, type SessionTokens, type SessionUser } from "@/services/auth";
+import { authService, isSignupHandoff, normaliseEmail, normaliseMobile, type SendOtpResult, type SessionTokens, type SessionUser, type SignupHandoff } from "@/services/auth";
 import { partyService, type AccountType, type Party } from "@/services/party";
 
 /**
@@ -27,8 +27,14 @@ interface AuthValue {
     /** Both sides granted — an account that publishes and advertises. */
     parties: Party[];
     cartCount: number;
+    /** ED-1: true while the signed-in account's email is still to prove (the stamp exists and is null). */
+    needsEmail: boolean;
     sendOtp: (mobile: string) => Promise<SendOtpResult>;
-    verifyOtp: (mobile: string, otp: string) => Promise<SessionUser>;
+    /** ED-1: `signupToken` ends an email sign-up — the proven address is written onto this number's account. */
+    verifyOtp: (mobile: string, otp: string, signupToken?: string | null) => Promise<SessionUser>;
+    sendEmailOtp: (email: string) => Promise<SendOtpResult>;
+    /** ED-1: a known address signs in; a new one hands off to the phone step. */
+    verifyEmailOtp: (email: string, otp: string) => Promise<{ kind: "signed-in"; user: SessionUser } | { kind: "signup"; signup: SignupHandoff }>;
     signInWithTokens: (result: SessionTokens) => Promise<SessionUser>;
     chooseParty: (input: { party: Party; accountType: AccountType; name?: string }) => Promise<void>;
     setPreferredParty: (party: Party) => void;
@@ -114,7 +120,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const sendOtp = React.useCallback((mobile: string) => authService.sendOtp(normaliseMobile(mobile)), []);
 
     const verifyOtp = React.useCallback(
-        async (mobile: string, otp: string) => signInWithTokens(await authService.verifyOtp(normaliseMobile(mobile), otp)),
+        async (mobile: string, otp: string, signupToken?: string | null) => signInWithTokens(await authService.verifyOtp(normaliseMobile(mobile), otp, signupToken)),
+        [signInWithTokens]
+    );
+
+    const sendEmailOtp = React.useCallback((email: string) => authService.sendEmailOtp(normaliseEmail(email)), []);
+
+    const verifyEmailOtp = React.useCallback(
+        async (email: string, otp: string) => {
+            const result = await authService.verifyEmailOtp(normaliseEmail(email), otp);
+            if (isSignupHandoff(result)) return { kind: "signup" as const, signup: result.signup };
+            return { kind: "signed-in" as const, user: await signInWithTokens(result) };
+        },
         [signInWithTokens]
     );
 
@@ -154,10 +171,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const status: Status = !hasSession ? "signed-out" : !account.checked ? "restoring" : user ? "signed-in" : "signed-out";
     const parties = partiesOf(user);
     const party = parties.length === 0 ? null : preferred && parties.includes(preferred) ? preferred : parties[0];
+    const needsEmail = !!user && user.emailVerifiedAt === null;
 
     const value = React.useMemo<AuthValue>(
-        () => ({ status, user, party, parties, cartCount: lines.length, sendOtp, verifyOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, refresh: read }),
-        [status, user, party, parties, lines.length, sendOtp, verifyOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, read]
+        () => ({ status, user, party, parties, cartCount: lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, refresh: read }),
+        [status, user, party, parties, lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, read]
     );
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -170,24 +188,29 @@ export function useAuth(): AuthValue {
 }
 
 /**
- * Wraps a workspace: no session, to sign-in (and back here after); a session
+ * Wraps a workspace: no session, to sign-in (and back here after); ED-1, an
+ * email still to prove, to the email step (and back here after); a session
  * without the side the workspace needs, to the workspace chooser.
  */
 export function RequireParty({ party: needed, children }: { party: Party; children: React.ReactNode }) {
-    const { status, parties } = useAuth();
+    const { status, parties, needsEmail } = useAuth();
     const router = useRouter();
 
     React.useEffect(() => {
         if (status === "restoring") return;
+        const next = window.location.pathname + window.location.search;
         if (status === "signed-out") {
-            const next = window.location.pathname + window.location.search;
             router.replace(`/sign-in?next=${encodeURIComponent(next)}`);
             return;
         }
+        if (needsEmail) {
+            router.replace(`/verify-email?next=${encodeURIComponent(next)}`);
+            return;
+        }
         if (!parties.includes(needed)) router.replace(`/choose-workspace?party=${needed}`);
-    }, [status, parties, needed, router]);
+    }, [status, parties, needed, needsEmail, router]);
 
-    if (status !== "signed-in" || !parties.includes(needed)) {
+    if (status !== "signed-in" || needsEmail || !parties.includes(needed)) {
         return (
             <div className="flex min-h-[60vh] items-center justify-center">
                 <p className="text-sm text-dim">Checking your session…</p>
