@@ -6,16 +6,18 @@ import { messageOf } from "@/lib/api-client";
 import { BookingCard, ErrorNote, StepFooter, smallButton } from "@/components/booking/booking-frame";
 import { ChargesTable } from "@/components/booking/charges";
 import { DateRangeDialog } from "@/components/booking/date-range-dialog";
+import { PrintChoice } from "@/components/booking/print-choice";
 import { SpaceLineCard } from "@/components/booking/space-line";
 import { StepPage, stepHref, useCampaignId, type ReadyCampaign } from "@/components/booking/step-page";
 import { kindLineOf, useListingCards } from "@/components/booking/summary-rail";
-import { bookingService, chargesOf, estimateCart, flightDays, formatFlight, rupees, type InventoryMatch } from "@/services/booking";
+import { bookingService, chargesOf, estimateCart, flightDays, formatFlight, rupees, type FulfilmentChoice, type InventoryMatch, type SpotItem } from "@/services/booking";
 
 /**
  * Step 2 · Ad spaces: the campaign's chosen spaces as the cart drew them,
  * priced by the review, with Remove, the dates picker (5204:67792) and the
  * spaces ADX matches to the brief (`GET /campaigns/:id/inventory`) to add
- * from. Every change is `PUT /campaigns/:id/spots`, the cart sent whole.
+ * from. Every change is `PUT /campaigns/:id/spots`, the cart sent whole —
+ * PS-1: each print space carries its own print choice on it.
  */
 export default function SpacesPage({ params }: { params: Promise<{ id: string }> }) {
     const id = useCampaignId(params);
@@ -53,7 +55,10 @@ function SpacesStep({ ready }: { ready: ReadyCampaign }) {
     const charges = review ? chargesOf(review) : estimateCart(campaign.spots.map((spot) => ({ ratePerDay: spot.ratePerDay, print: campaign.fulfilment !== "ADVERTISER_SHIPS" })), days);
     const inCart = new Set(campaign.spots.map((spot) => spot.listingId));
 
-    const write = async (what: string, items: { listingId: string }[], dates?: { from: string; to: string }) => {
+    /** The cart as it stands, each spot with its own print choice, so a rewrite keeps them. */
+    const items = (): SpotItem[] => campaign.spots.map((spot) => ({ listingId: spot.listingId, fulfilment: spot.fulfilment ?? review?.lines.find((l) => l.spotId === spot.id)?.fulfilment ?? null }));
+
+    const write = async (what: string, items: SpotItem[], dates?: { from: string; to: string }) => {
         setBusy(what);
         setError(null);
         try {
@@ -67,8 +72,9 @@ function SpacesStep({ ready }: { ready: ReadyCampaign }) {
         }
     };
 
-    const remove = (listingId: string) => write(listingId, campaign.spots.filter((spot) => spot.listingId !== listingId).map((spot) => ({ listingId: spot.listingId })));
-    const add = (listingId: string) => write(listingId, [...campaign.spots.map((spot) => ({ listingId: spot.listingId })), { listingId }]);
+    const remove = (listingId: string) => write(listingId, items().filter((item) => item.listingId !== listingId));
+    const add = (listingId: string) => write(listingId, [...items(), { listingId }]);
+    const choosePrint = (listingId: string, fulfilment: FulfilmentChoice | null) => write(`print:${listingId}`, items().map((item) => (item.listingId === listingId ? { ...item, fulfilment } : item)));
 
     return (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -96,6 +102,7 @@ function SpacesStep({ ready }: { ready: ReadyCampaign }) {
                                         }
                                     />
                                     {clash && <p className="mt-1.5 text-xs text-[#b42318]">No slot left on these dates — taken while you were building the campaign. Remove it or change the dates.</p>}
+                                    {!kind.digital && <PrintChoice className="mt-2 px-1" value={spot.fulfilment ?? line?.fulfilment ?? null} campaignChoice={campaign.fulfilment} disabled={busy !== null} onChange={(next) => void choosePrint(spot.listingId, next)} />}
                                 </div>
                             );
                         })}

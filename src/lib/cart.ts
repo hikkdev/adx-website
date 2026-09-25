@@ -14,6 +14,8 @@ import * as React from "react";
  * "Printing and installation" card) rides along so the campaign's
  * `fulfilment` is set from what the person ticked here.
  */
+export type CartFulfilment = "ADX_PRINTS" | "ADVERTISER_SHIPS";
+
 export interface CartLine {
     listingId: string;
     title: string;
@@ -22,6 +24,8 @@ export interface CartLine {
     area: string | null;
     ratePerDay: string | null;
     addedAt: string;
+    /** PS-1: this space's own print choice; absent or null means the campaign's. */
+    fulfilment?: CartFulfilment | null;
 }
 
 export interface CartDates {
@@ -81,6 +85,11 @@ export const cart = {
     },
     setPrinting(printing: boolean) {
         write({ ...read(), printing });
+    },
+    /** PS-1: one space's own print choice; null falls back to the campaign's. */
+    setLineFulfilment(listingId: string, fulfilment: CartFulfilment | null) {
+        const current = read();
+        write({ ...current, lines: current.lines.map((l) => (l.listingId === listingId ? { ...l, fulfilment } : l)) });
     },
     clear() {
         write(EMPTY);

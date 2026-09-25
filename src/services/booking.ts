@@ -1,5 +1,6 @@
 import { api, apiFetch, ApiError } from "@/lib/api-client";
 import type { CartState } from "@/lib/cart";
+import type { ReservationFeeOffer, ReservationView } from "@/services/reservation";
 
 /**
  * The booking — DR 12 board 04, from the cart to a paid campaign — over the
@@ -29,6 +30,8 @@ export interface CampaignSpot {
     days: number;
     quantity: number;
     lineTotal: string;
+    /** PS-1: this spot's own print choice; null means the campaign's. */
+    fulfilment?: FulfilmentChoice | null;
     listing: {
         id: string;
         title: string;
@@ -106,6 +109,14 @@ export interface Campaign {
     creatives: CampaignCreative[];
     spotCount?: number;
     city?: string | null;
+    /** RF-1: the reservation as it stands, or null when none was ever taken. */
+    reservation?: ReservationView | null;
+    /** DQ-1: the desk's design quote on an ADX-design campaign. */
+    designQuoteAmount?: string | null;
+    designQuoteStatus?: "QUOTED" | "ACCEPTED" | "DECLINED" | null;
+    designQuoteNote?: string | null;
+    designQuotedAt?: string | null;
+    designQuoteRespondedAt?: string | null;
 }
 
 export interface MissingAnswer {
@@ -129,6 +140,8 @@ export interface ReviewLine {
     fees: { label: string; amount: string }[];
     gst: string;
     gross: string;
+    /** PS-1: the print choice this line was priced under; null means the campaign's. A spot the advertiser ships for has no PRINTING fee. */
+    fulfilment?: FulfilmentChoice | null;
 }
 
 export interface AgreementStanding {
@@ -146,8 +159,15 @@ export interface CampaignReview {
     lines: ReviewLine[];
     spotsSubtotal: string;
     feesTotal: string;
+    /** GST-D: already net of `discountGst`; total = spotsSubtotal + feesTotal − discount + gstAmount. */
     gstAmount: string;
     discount: string;
+    /** GST-D: the tax the discount took off with it. */
+    discountGst?: string;
+    /** DQ-1: ADX's accepted design quote as a fee on the booking ("Design by ADX"); null until accepted. */
+    designFee?: { amount: string; gst: string; note: string | null } | null;
+    /** RF-1: what reserving would cost on this checkout; null when the policy could not be read. */
+    reservationFee?: ReservationFeeOffer | null;
     total: string;
     budget: string | null;
     budgetRemaining: string | null;
@@ -228,11 +248,22 @@ export interface AdvertiserProfile {
     billingAddress: string | null;
     city: string | null;
     state: string | null;
+    /** AD-1: the PIN and the country on the billing address. */
+    postalCode?: string | null;
+    country?: string | null;
     kycStatus: string;
     verified?: boolean;
 }
 
-export type AdvertiserPatch = Partial<Pick<AdvertiserProfile, "name" | "email" | "companyName" | "gstin" | "billingAddress" | "city" | "state">>;
+export type AdvertiserPatch = Partial<Pick<AdvertiserProfile, "name" | "email" | "companyName" | "gstin" | "billingAddress" | "city" | "state" | "postalCode" | "country">>;
+
+/** PS-1: one line of `PUT /campaigns/:id/spots` — the per-spot print choice rides with it. */
+export interface SpotItem {
+    listingId: string;
+    quantity?: number;
+    matchScore?: number | null;
+    fulfilment?: FulfilmentChoice | null;
+}
 
 export interface Eligibility {
     eligible: boolean;
@@ -263,8 +294,10 @@ export const bookingService = {
     get: (id: string) => api.get<Campaign>(`/campaigns/${encodeURIComponent(id)}`),
     patch: (id: string, body: CampaignPatch) => api.patch<Campaign>(`/campaigns/${encodeURIComponent(id)}`, body),
     discard: (id: string) => api.delete<{ discarded: boolean }>(`/campaigns/${encodeURIComponent(id)}`),
-    /** The cart is sent whole, because it is edited whole. */
-    setSpots: (id: string, items: { listingId: string; quantity?: number }[]) => api.put<Campaign>(`/campaigns/${encodeURIComponent(id)}/spots`, { items }),
+    /** The cart is sent whole, because it is edited whole. PS-1: each item may carry its own print choice. */
+    setSpots: (id: string, items: SpotItem[]) => api.put<Campaign>(`/campaigns/${encodeURIComponent(id)}/spots`, { items }),
+    /** DQ-1: the advertiser's answer to the desk's design quote; answers the campaign. */
+    respondToDesignQuote: (id: string, decision: "ACCEPTED" | "DECLINED") => api.post<Campaign>(`/campaigns/${encodeURIComponent(id)}/design-quote/respond`, { decision }),
     inventory: (id: string, limit = 6) => api.get<InventoryMatch[]>(`/campaigns/${encodeURIComponent(id)}/inventory?sort=BEST_MATCH&limit=${limit}`),
     review: (id: string) => api.get<CampaignReview>(`/campaigns/${encodeURIComponent(id)}/review`),
     /** `POST /upload` multipart — the file, then its purpose; answers the stored file's public URL and id. */
@@ -315,10 +348,7 @@ export const bookingService = {
                 fulfilment: state.printing ? "ADX_PRINTS" : "ADVERTISER_SHIPS",
                 ...(city ? { targetingMethod: "MARKET_OR_DMA", targetMarket: city, targetMarkets: [city], targetLocation: city } : {}),
             });
-            return await bookingService.setSpots(
-                draft.id,
-                state.lines.map((line) => ({ listingId: line.listingId }))
-            );
+            return await bookingService.setSpots(draft.id, spotItemsOf(state));
         } catch (caught) {
             await bookingService.discard(draft.id).catch(() => undefined);
             throw caught;
@@ -339,6 +369,11 @@ export function normalisePromo(answer: unknown): { review: CampaignReview; promo
     const review = (answer ?? {}) as CampaignReview;
     const promo = review.promo && typeof review.promo === "object" && review.promo.code ? { code: review.promo.code, amount: String(review.promo.amount ?? review.discount ?? "0") } : null;
     return { review: { ...review, discount: String(review.discount ?? "0") }, promo };
+}
+
+/** PS-1: the cart's lines as `PUT /campaigns/:id/spots` takes them — a line's own print choice when it differs from the campaign's, else null (the campaign's). */
+export function spotItemsOf(state: Pick<CartState, "lines">): SpotItem[] {
+    return state.lines.map((line) => ({ listingId: line.listingId, ...(line.fulfilment ? { fulfilment: line.fulfilment } : {}) }));
 }
 
 /** The city the cart's spaces are in, when they agree on one — off the "area" line's last part or the chip. */
@@ -408,6 +443,10 @@ export interface Charges {
     otherFees: { label: string; amount: number }[];
     gst: number;
     discount: number;
+    /** GST-D: the tax the discount took off with it; `gst` is already net of it. */
+    discountGst: number;
+    /** DQ-1: "Design by ADX", once the quote is accepted. */
+    design: number;
     total: number;
     /** Every fee line by its own label, for the itemised block. */
     fees: { label: string; amount: number }[];
@@ -422,7 +461,9 @@ const isPlatform = (label: string) => /platform|service fee|adx fee/i.test(label
  * installation, the platform fee, GST — any other fee the rates carry keeps
  * its own row — and the total the server worked out, never re-added here.
  */
-export function chargesOf(review: Pick<CampaignReview, "lines" | "spotsSubtotal" | "gstAmount" | "discount" | "total" | "feesTotal">): Charges {
+export const DESIGN_FEE_LABEL = "Design by ADX";
+
+export function chargesOf(review: Pick<CampaignReview, "lines" | "spotsSubtotal" | "gstAmount" | "discount" | "total" | "feesTotal"> & Partial<Pick<CampaignReview, "discountGst" | "designFee">>): Charges {
     const fees = new Map<string, number>();
     const others = new Map<string, number>();
     let printing = 0;
@@ -438,6 +479,12 @@ export function chargesOf(review: Pick<CampaignReview, "lines" | "spotsSubtotal"
             else others.set(fee.label, (others.get(fee.label) ?? 0) + amount);
         }
     }
+    /* DQ-1: the design fee is the booking's, not a line's — it gets its own row. */
+    const design = Number(review.designFee?.amount) || 0;
+    if (design > 0) {
+        fees.set(DESIGN_FEE_LABEL, (fees.get(DESIGN_FEE_LABEL) ?? 0) + design);
+        others.set(DESIGN_FEE_LABEL, (others.get(DESIGN_FEE_LABEL) ?? 0) + design);
+    }
     return {
         mediaRent: Number(review.spotsSubtotal) || 0,
         printing,
@@ -447,10 +494,23 @@ export function chargesOf(review: Pick<CampaignReview, "lines" | "spotsSubtotal"
         otherFees: [...others.entries()].map(([label, amount]) => ({ label, amount })),
         gst: Number(review.gstAmount) || 0,
         discount: Number(review.discount) || 0,
+        discountGst: Number(review.discountGst) || 0,
+        design,
         total: Number(review.total) || 0,
         fees: [...fees.entries()].map(([label, amount]) => ({ label, amount })),
     };
 }
+
+/** GST-D: "− ₹1,000 (incl. GST −₹153)" — the discount as one line whose arithmetic adds up on screen. */
+export function discountLabel(charges: Pick<Charges, "discount" | "discountGst">): string {
+    const base = `− ${rupees(charges.discount)}`;
+    return charges.discountGst > 0 ? `${base} (incl. GST −${rupees(charges.discountGst)})` : base;
+}
+
+/** PS-1: the print choice a review line was priced under — its own, else the campaign's. */
+export const fulfilmentOfLine = (line: Pick<ReviewLine, "fulfilment"> | null | undefined, campaign: Pick<Campaign, "fulfilment">): FulfilmentChoice | null => line?.fulfilment ?? campaign.fulfilment ?? null;
+
+export const FULFILMENT_LABEL: Record<FulfilmentChoice, string> = { ADX_PRINTS: "ADX prints", ADVERTISER_SHIPS: "I'll ship my own prints" };
 
 /** The cart's estimate before a campaign exists: the listing page's own rule, so the two agree. */
 export function estimateCart(lines: { ratePerDay: string | null; print: boolean }[], days: number): Charges {
@@ -461,7 +521,7 @@ export function estimateCart(lines: { ratePerDay: string | null; print: boolean 
     const platformFee = lines.length > 0 ? 200 : 0;
     const subtotal = mediaRent + printing + installation + platformFee;
     const gst = Math.round(subtotal * 0.18);
-    return { mediaRent, printing, installation, production: printing + installation, platformFee, otherFees: [], gst, discount: 0, total: Math.round(subtotal + gst), fees: [] };
+    return { mediaRent, printing, installation, production: printing + installation, platformFee, otherFees: [], gst, discount: 0, discountGst: 0, design: 0, total: Math.round(subtotal + gst), fees: [] };
 }
 
 /** The review's `missing` without the agreement lines — what the brief itself still lacks. */

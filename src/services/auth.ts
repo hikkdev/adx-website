@@ -14,7 +14,12 @@ import { ApiError, api } from "@/lib/api-client";
  *            in this way proves its email afterwards through
  *            `users/me/email/send-code` + `/verify`.
  *
- * Google sign-in stays for accounts an administrator linked.
+ * Google and Facebook (G-2, FB-1) are doors too: a mailbox the provider
+ * vouches for skips the email code and goes straight to the phone step with
+ * the same signup token. 2FA-A: any account with an authenticator app
+ * answers a **challenge** instead of tokens from every door; `/verify-2fa`
+ * finishes it. EC-8: a code sent to an email is eight capital letters; a
+ * code sent to a phone stays six digits.
  */
 export interface SendOtpResult {
     message: string;
@@ -44,6 +49,9 @@ export interface SessionTokens {
     user?: SessionUser;
     /** ED-1: on the phone step of an email sign-up, what became of the address. */
     signup?: { email: string | null; attached: boolean; outcome: "PRIMARY" | "KEPT" | "TAKEN" | "EXPIRED" };
+    /** 2FA-A: after a recovery code, how many are left — and a warning once they run low. */
+    recoveryCodesLeft?: number;
+    warning?: string | null;
 }
 
 /** ED-1: a new address was read; the number comes next, carrying this. */
@@ -53,9 +61,24 @@ export interface SignupHandoff {
     expiresInSeconds: number;
 }
 
-export type EmailDoorResult = SessionTokens | { signup: SignupHandoff };
+/** 2FA-A: the account has a second factor; no tokens until it is answered. */
+export type TwoFactorMethod = "AUTHENTICATOR" | "SMS" | "EMAIL";
 
-export const isSignupHandoff = (result: EmailDoorResult): result is { signup: SignupHandoff } => "signup" in result && !("accessToken" in result);
+export interface TwoFactorChallenge {
+    challengeToken: string;
+    methods: TwoFactorMethod[];
+    maskedMobile: string | null;
+    maskedEmail: string | null;
+}
+
+/** What any sign-in door answers: a session, a sign-up hand-off, or a second-factor challenge. */
+export type DoorResult = SessionTokens | { signup: SignupHandoff } | { challenge: TwoFactorChallenge };
+
+export type EmailDoorResult = DoorResult;
+
+export const isSignupHandoff = (result: DoorResult): result is { signup: SignupHandoff } => "signup" in result && !("accessToken" in result);
+
+export const isChallenge = (result: DoorResult): result is { challenge: TwoFactorChallenge } => "challenge" in result && !("accessToken" in result);
 
 /** `POST /users/me/email/send-code` — the budget, and the address as the server normalised it. */
 export interface EmailCodeSent extends SendOtpResult {
@@ -87,6 +110,58 @@ export function otpFailure(cause: unknown): OtpFailure | null {
         lockedUntil: details.lockedUntil,
     };
 }
+
+/* ------------------------------------------------------------------ */
+/* Codes — EC-8                                                        */
+/* ------------------------------------------------------------------ */
+
+export type CodeChannel = "mobile" | "email";
+
+/** Six digits by SMS. */
+export const SMS_CODE_LENGTH = 6;
+/** EC-8: eight capital letters by email — no I or O, so nothing reads as a digit. */
+export const EMAIL_CODE_LENGTH = 8;
+export const EMAIL_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+export const codeLengthFor = (channel: CodeChannel): number => (channel === "email" ? EMAIL_CODE_LENGTH : SMS_CODE_LENGTH);
+
+const EMAIL_LETTER = new RegExp(`[^${EMAIL_CODE_ALPHABET}]`, "g");
+
+/**
+ * What a person typed or pasted, kept to the characters the channel's code
+ * can hold: digits for a phone code; the email alphabet, upper-cased, for an
+ * email code (typed in any case, accepted in any case).
+ */
+export function normaliseCode(raw: string, channel: CodeChannel): string {
+    if (channel === "email") return raw.toUpperCase().replace(EMAIL_LETTER, "");
+    return raw.replace(/\D/g, "");
+}
+
+/**
+ * The boxes after typing or pasting `raw` into box `index`: the characters
+ * spread from that box forward, boxes past the paste left as they were, and
+ * the box to focus next. An empty `raw` clears the box.
+ */
+export function spreadCode(code: string[], index: number, raw: string, channel: CodeChannel): { code: string[]; focus: number } {
+    const chars = normaliseCode(raw, channel);
+    if (!chars) return { code: code.map((c, i) => (i === index ? "" : c)), focus: index };
+    const next = code.map((c, i) => (i < index ? c : (chars[i - index] ?? (i < index + chars.length ? "" : c))));
+    return { code: next, focus: Math.min(code.length - 1, index + chars.length) };
+}
+
+/** A recovery code is `XXXX-XXXX` from the email alphabet plus digits 2–9; a six-digit app code is not one. */
+export const looksLikeRecoveryCode = (raw: string): boolean => /^[A-Z2-9]{4}-?[A-Z2-9]{4}$/i.test(raw.trim()) && !/^\d+$/.test(raw.trim());
+
+/** A 2FA code as the backend takes it: an app code as six digits, a recovery code upper-cased with its dash. */
+export function normaliseTwoFactorCode(raw: string): string {
+    const trimmed = raw.trim();
+    if (/^[\d\s]+$/.test(trimmed)) return trimmed.replace(/\s/g, "");
+    return trimmed.toUpperCase().replace(/[\s]/g, "");
+}
+
+/* ------------------------------------------------------------------ */
+/* Addresses and numbers                                               */
+/* ------------------------------------------------------------------ */
 
 /** +91 and ten digits, as the backend stores every number. */
 export function normaliseMobile(input: string): string {
@@ -133,17 +208,118 @@ export function destinationFor(me: Pick<SessionUser, "roles" | "emailVerifiedAt"
     return publisher && !advertiser ? "/publisher" : "/advertiser";
 }
 
+/** G-2 / FB-1 / ED-1: the phone step a new address is handed to, with the proof of the email. */
+export function signupHref(signup: Pick<SignupHandoff, "signupToken" | "email">, next: string | null | undefined): string {
+    const query = new URLSearchParams({ signup: signup.signupToken, email: signup.email });
+    const wanted = safeNext(next);
+    if (wanted) query.set("next", wanted);
+    return `/verify-phone?${query.toString()}`;
+}
+
+/** 2FA-A: the second-factor step, carrying only `next` — the challenge itself is remembered in this tab. */
+export function challengeHref(next: string | null | undefined): string {
+    const wanted = safeNext(next);
+    return wanted ? `/verify-2fa?next=${encodeURIComponent(wanted)}` : "/verify-2fa";
+}
+
+const CHALLENGE_KEY = "adx.web.challenge";
+
+/**
+ * The challenge a door just answered, kept in this tab until `/verify-2fa`
+ * consumes it — session storage, so it never rides in a URL or outlives the
+ * tab. A missing one sends the person back to sign-in.
+ */
+export const pendingChallenge = {
+    remember(challenge: TwoFactorChallenge): void {
+        try {
+            window.sessionStorage.setItem(CHALLENGE_KEY, JSON.stringify(challenge));
+        } catch {
+            /* ignore */
+        }
+    },
+    read(): TwoFactorChallenge | null {
+        try {
+            const raw = window.sessionStorage.getItem(CHALLENGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw) as Partial<TwoFactorChallenge>;
+            if (typeof parsed.challengeToken !== "string" || !Array.isArray(parsed.methods)) return null;
+            return { challengeToken: parsed.challengeToken, methods: parsed.methods as TwoFactorMethod[], maskedMobile: parsed.maskedMobile ?? null, maskedEmail: parsed.maskedEmail ?? null };
+        } catch {
+            return null;
+        }
+    },
+    clear(): void {
+        try {
+            window.sessionStorage.removeItem(CHALLENGE_KEY);
+        } catch {
+            /* ignore */
+        }
+    },
+};
+
+/* ------------------------------------------------------------------ */
+/* The authenticator app — 2FA settings                                */
+/* ------------------------------------------------------------------ */
+
+/** `GET /auth/2fa/status` — the enrolment as the backend reports it for this account. */
+export interface TwoFactorStatus {
+    methods: string[];
+    authenticator: { enrolled: boolean; enrolledAt: string | null; recoveryCodesLeft: number } | null;
+    policy?: unknown;
+    mustEnrolAuthenticator: boolean;
+}
+
+/** `POST /auth/2fa/totp/enrol` — shown once: the secret for manual entry, the otpauth link, and the QR as a data URL. */
+export interface EnrolmentStart {
+    secret: string;
+    otpauthUri: string;
+    qrSvg: string;
+    expiresInSeconds: number;
+}
+
+export interface EnrolmentDone {
+    enrolledAt: string;
+    /** Ten `XXXX-XXXX` codes, answered once and never again. */
+    recoveryCodes: string[];
+    accessToken?: string;
+}
+
+/** "ABCD EFGH IJKL" — the secret in groups of four, for typing into an app by hand. */
+export const groupSecret = (secret: string): string => secret.replace(/\s+/g, "").replace(/(.{4})/g, "$1 ").trim();
+
+export const twoFactorService = {
+    status: () => api.get<TwoFactorStatus>("/auth/2fa/status"),
+    enrol: () => api.post<EnrolmentStart>("/auth/2fa/totp/enrol", {}),
+    confirm: (code: string) => api.post<EnrolmentDone>("/auth/2fa/totp/confirm", { code: normaliseTwoFactorCode(code) }),
+    /** Either the app's code or a recovery code — the phone may be the thing that was lost. */
+    disable: (proof: string) =>
+        api.post<{ disabled: boolean; message: string }>("/auth/2fa/totp/disable", looksLikeRecoveryCode(proof) ? { recoveryCode: normaliseTwoFactorCode(proof) } : { code: normaliseTwoFactorCode(proof) }),
+    regenerateRecoveryCodes: (code: string) => api.post<{ recoveryCodes: string[] }>("/auth/2fa/recovery-codes/regenerate", { code: normaliseTwoFactorCode(code) }),
+};
+
+/* ------------------------------------------------------------------ */
+/* The doors                                                           */
+/* ------------------------------------------------------------------ */
+
 export const authService = {
     sendOtp: (mobile: string) => api.post<SendOtpResult>("/auth/send-otp", { mobile }, { anonymous: true }),
-    /** ED-1: `signupToken` ends an email sign-up — the proven address is written onto this number's account. */
+    /** ED-1: `signupToken` ends an email sign-up — the proven address is written onto this number's account. 2FA-A: may answer a challenge. */
     verifyOtp: (mobile: string, otp: string, signupToken?: string | null) =>
-        api.post<SessionTokens>("/auth/verify-otp", { mobile, otp, ...(signupToken ? { signupToken } : {}) }, { anonymous: true }),
+        api.post<DoorResult>("/auth/verify-otp", { mobile, otp, ...(signupToken ? { signupToken } : {}) }, { anonymous: true }),
     sendEmailOtp: (email: string) => api.post<SendOtpResult>("/auth/send-otp-email", { email }, { anonymous: true }),
-    verifyEmailOtp: (email: string, otp: string) => api.post<EmailDoorResult>("/auth/verify-otp-email", { email, otp }, { anonymous: true }),
-    google: (idToken: string) => api.post<SessionTokens>("/auth/google", { idToken }, { anonymous: true }),
+    /** EC-8: the eight letters, sent upper-cased. */
+    verifyEmailOtp: (email: string, otp: string) => api.post<DoorResult>("/auth/verify-otp-email", { email, otp: normaliseCode(otp, "email") }, { anonymous: true }),
+    /** G-2: a known address signs in; a Google-verified new one is a sign-up hand-off. */
+    google: (idToken: string) => api.post<DoorResult>("/auth/google", { idToken }, { anonymous: true }),
+    /** FB-1: the same, on the mailbox Facebook vouches for. 409 FACEBOOK_EMAIL_REQUIRED when it shares none. */
+    facebook: (accessToken: string) => api.post<DoorResult>("/auth/facebook", { accessToken }, { anonymous: true }),
+    /** 2FA-A: the app's six digits or a recovery code, and then the tokens the door held back. */
+    verifyTwoFactor: (challengeToken: string, code: string) => api.post<SessionTokens>("/auth/2fa/verify", { challengeToken, code: normaliseTwoFactorCode(code) }, { anonymous: true }),
+    /** An ADMIN's challenge may also be answered by SMS or email; this sends that code. */
+    sendTwoFactor: (challengeToken: string, method: TwoFactorMethod) => api.post<SendOtpResult & { method: TwoFactorMethod }>("/auth/2fa/send", { challengeToken, method }, { anonymous: true }),
     logout: (refreshToken: string) => api.post<void>("/auth/logout", { refreshToken }),
     me: () => api.get<SessionUser>("/users/me"),
     /** ED-1: proving the account's own email after a number-first sign-in. */
     sendMyEmailCode: (email: string) => api.post<EmailCodeSent>("/users/me/email/send-code", { email }),
-    verifyMyEmail: (email: string, code: string) => api.post<SessionUser>("/users/me/email/verify", { email, code }),
+    verifyMyEmail: (email: string, code: string) => api.post<SessionUser>("/users/me/email/verify", { email, code: normaliseCode(code, "email") }),
 };

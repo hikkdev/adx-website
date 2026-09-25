@@ -6,42 +6,48 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AuthCard, AuthTitle, primaryButton } from "@/components/auth/auth-card";
 import { useAuth } from "@/lib/auth";
 import { messageOf } from "@/lib/api-client";
-import { destinationFor, maskEmail, maskMobile, otpFailure } from "@/services/auth";
+import { cn } from "@/lib/utils";
+import { challengeHref, codeLengthFor, destinationFor, maskEmail, maskMobile, otpFailure, signupHref, spreadCode, type CodeChannel } from "@/services/auth";
 
-export const CODE_LENGTH = 6;
+/** The phone code's length; email codes are `codeLengthFor("email")` (EC-8: eight letters). */
+export const CODE_LENGTH = codeLengthFor("mobile");
 
-/** The six boxes, one input each; a paste fills them all. Shared by every code screen. */
-export function CodeBoxes({ code, onChange, onSubmit }: { code: string[]; onChange: (next: string[]) => void; onSubmit: () => void }) {
+/**
+ * The boxes, one input each; a paste fills them all. Shared by every code
+ * screen. EC-8: `channel` decides the length and the keyboard — six digits
+ * for a phone, eight capital letters (typed in any case) for an email.
+ */
+export function CodeBoxes({ code, onChange, onSubmit, channel = "mobile" }: { code: string[]; onChange: (next: string[]) => void; onSubmit: () => void; channel?: CodeChannel }) {
     const inputs = React.useRef<(HTMLInputElement | null)[]>([]);
+    const length = code.length;
+    const letters = channel === "email";
     const put = (index: number, raw: string) => {
-        const digits = raw.replace(/\D/g, "");
-        if (!digits) {
-            onChange(code.map((d, i) => (i === index ? "" : d)));
-            return;
-        }
-        onChange(code.map((d, i) => (i < index ? d : (digits[i - index] ?? (i < index + digits.length ? "" : d)))));
-        const last = Math.min(CODE_LENGTH - 1, index + digits.length);
-        inputs.current[last]?.focus();
+        const spread = spreadCode(code, index, raw, channel);
+        onChange(spread.code);
+        if (spread.code[index] || raw === "") inputs.current[spread.focus]?.focus();
     };
     return (
-        <div className="grid grid-cols-6 gap-3" role="group" aria-label="One-time code">
-            {code.map((digit, index) => (
+        <div className={cn("grid", length > 6 ? "grid-cols-8 gap-2" : "grid-cols-6 gap-3")} role="group" aria-label="One-time code">
+            {code.map((char, index) => (
                 <input
                     key={index}
                     ref={(el) => {
                         inputs.current[index] = el;
                     }}
-                    inputMode="numeric"
+                    inputMode={letters ? "text" : "numeric"}
+                    autoCapitalize={letters ? "characters" : "off"}
+                    autoCorrect="off"
+                    spellCheck={false}
                     autoComplete={index === 0 ? "one-time-code" : "off"}
-                    maxLength={CODE_LENGTH}
-                    value={digit}
+                    maxLength={length}
+                    value={char}
                     onChange={(event) => put(index, event.target.value)}
                     onKeyDown={(event) => {
-                        if (event.key === "Backspace" && !digit && index > 0) inputs.current[index - 1]?.focus();
+                        if (event.key === "Backspace" && !char && index > 0) inputs.current[index - 1]?.focus();
                         if (event.key === "Enter") onSubmit();
                     }}
-                    aria-label={`Digit ${index + 1}`}
-                    className="h-[58px] rounded-md border border-line bg-white text-center text-xl font-semibold text-ink focus:border-ink focus:outline-none"
+                    aria-label={`${letters ? "Letter" : "Digit"} ${index + 1}`}
+                    className={cn("h-[58px] min-w-0 rounded-md border border-line bg-white text-center font-semibold text-ink focus:border-ink focus:outline-none", letters ? "text-lg uppercase" : "text-xl")}
                     autoFocus={index === 0}
                 />
             ))}
@@ -49,25 +55,28 @@ export function CodeBoxes({ code, onChange, onSubmit }: { code: string[]; onChan
     );
 }
 
-export const emptyCode = (prefill = "") => Array.from({ length: CODE_LENGTH }, (_, i) => prefill[i] ?? "");
+/** `length` boxes, filled from `prefill` (the dev code the backend hands back outside production). */
+export const emptyCode = (prefill = "", length = CODE_LENGTH) => Array.from({ length }, (_, i) => prefill[i] ?? "");
 
 /**
  * DR 12 · 03 · 02 · Verify (5204:61783): the code the email or the number
  * just received. ED-1: the email door answers either a session (a known
  * address) or a signup hand-off — then the number is asked on
  * `/verify-phone`, carrying the token. The mobile door signs in and, when
- * the account's email is still to prove, goes on to `/verify-email`.
+ * the account's email is still to prove, goes on to `/verify-email`. 2FA-A:
+ * either door may answer a challenge, finished on `/verify-2fa`.
  */
 export function VerifyForm() {
     const router = useRouter();
     const params = useSearchParams();
-    const channel = params.get("channel") === "mobile" ? "mobile" : "email";
+    const channel: CodeChannel = params.get("channel") === "mobile" ? "mobile" : "email";
+    const length = codeLengthFor(channel);
     const email = params.get("email") ?? "";
     const mobile = params.get("mobile") ?? "";
     const signupToken = params.get("signup");
     const next = params.get("next");
     const { verifyOtp, sendOtp, verifyEmailOtp, sendEmailOtp } = useAuth();
-    const [code, setCode] = React.useState<string[]>(() => emptyCode(params.get("dev") ?? ""));
+    const [code, setCode] = React.useState<string[]>(() => emptyCode(params.get("dev") ?? "", length));
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [wait, setWait] = React.useState(() => Number(params.get("resend")) || 60);
@@ -92,26 +101,25 @@ export function VerifyForm() {
     };
 
     const submit = async () => {
-        if (value.length < CODE_LENGTH || busy) return;
+        if (value.length < length || busy) return;
         setBusy(true);
         setError(null);
         try {
-            if (channel === "email") {
-                const result = await verifyEmailOtp(email, value);
-                if (result.kind === "signup") {
-                    /* A new address: the number comes next, carrying the proof of the email. */
-                    router.replace(`/verify-phone?${query({ signup: result.signup.signupToken, email: result.signup.email })}`);
-                    return;
-                }
-                router.replace(destinationFor(result.user, next));
+            const outcome = channel === "email" ? await verifyEmailOtp(email, value) : await verifyOtp(mobile, value, signupToken);
+            if (outcome.kind === "signup") {
+                /* A new address: the number comes next, carrying the proof of the email. */
+                router.replace(signupHref(outcome.signup, next));
                 return;
             }
-            const me = await verifyOtp(mobile, value, signupToken);
-            router.replace(destinationFor(me, next));
+            if (outcome.kind === "challenge") {
+                router.replace(challengeHref(next));
+                return;
+            }
+            router.replace(destinationFor(outcome.user, next));
         } catch (caught) {
             const failure = otpFailure(caught);
             setError(failure ? failure.message : messageOf(caught, "That code did not work."));
-            setCode(emptyCode());
+            setCode(emptyCode("", length));
         } finally {
             setBusy(false);
         }
@@ -121,7 +129,7 @@ export function VerifyForm() {
         try {
             const sent = channel === "email" ? await sendEmailOtp(email) : await sendOtp(mobile);
             setWait(sent.resendAfterSeconds);
-            if (sent.devOtp) setCode(emptyCode(sent.devOtp));
+            if (sent.devOtp) setCode(emptyCode(sent.devOtp, length));
         } catch (caught) {
             const failure = otpFailure(caught);
             setError(failure ? failure.message : messageOf(caught, "Could not resend the code."));
@@ -136,7 +144,7 @@ export function VerifyForm() {
                 title={channel === "email" ? "Check your email" : "Check your phone"}
                 subtitle={
                     <>
-                        Enter the {CODE_LENGTH}-digit code sent to {channel === "email" ? maskEmail(email) : maskMobile(mobile)}.
+                        Enter the {length}-{channel === "email" ? "letter" : "digit"} code sent to {channel === "email" ? maskEmail(email) : maskMobile(mobile)}.
                     </>
                 }
             />
@@ -147,7 +155,7 @@ export function VerifyForm() {
                 }}
                 className="mt-8"
             >
-                <CodeBoxes code={code} onChange={setCode} onSubmit={() => void submit()} />
+                <CodeBoxes code={code} onChange={setCode} onSubmit={() => void submit()} channel={channel} />
                 <div className="mt-3 flex items-center justify-between text-sm">
                     <Link href={changeHref} className="text-dim hover:text-ink">
                         {channel === "email" ? "Change email" : "Change number"}
@@ -157,11 +165,11 @@ export function VerifyForm() {
                     </button>
                 </div>
                 {error && <p className="mt-2 text-sm text-danger" role="alert">{error}</p>}
-                <button type="submit" disabled={value.length < CODE_LENGTH || busy} className={`${primaryButton} mt-6`}>
+                <button type="submit" disabled={value.length < length || busy} className={`${primaryButton} mt-6`}>
                     {busy ? "Checking…" : "Verify & continue"}
                 </button>
             </form>
-            <p className="mt-6 text-sm text-dim">{channel === "email" ? "Use the code from your latest ADX email." : "Use the code from your latest ADX message."}</p>
+            <p className="mt-6 text-sm text-dim">{channel === "email" ? "Use the code from your latest ADX email — eight letters, in any case." : "Use the code from your latest ADX message."}</p>
         </AuthCard>
     );
 }

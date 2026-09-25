@@ -4,23 +4,30 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Copy, Info } from "lucide-react";
+import { toast } from "sonner";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { BookingCard, EditLink, ErrorNote, primaryButton, smallButton } from "@/components/booking/booking-frame";
 import { billingDraft } from "@/components/booking/billing-draft";
 import { CheckBox, FloatingField, RadioDot } from "@/components/booking/fields";
 import { launchGateway, recordAgreements, reserveCheckoutWindow, returnHref } from "@/components/booking/pay-launch";
 import { PromoCode } from "@/components/booking/promo-code";
+import { ReservationPanel } from "@/components/booking/reservation-panel";
 import { StepPage, accountNameOf, stepHref, useCampaignId, type ReadyCampaign } from "@/components/booking/step-page";
 import { SummaryRail } from "@/components/booking/summary-rail";
-import { bookingService, chargesOf, estimateCart, flightDays, formatFlight, insertionOrderAccepted, rupees, splitBillingAddress, type Eligibility, type PromoDiscount } from "@/services/booking";
-import { GATEWAY_LABEL, UPI_ID_PATTERN, UTR_PATTERN, notAvailableYet, paymentsService, pickGateway, type BankTransferDetails, type GatewayStatus, type PayMethod, type PaymentIntent, type PaymentSummary } from "@/services/payments";
+import { bookingService, chargesOf, discountLabel, estimateCart, flightDays, formatFlight, insertionOrderAccepted, rupees, splitBillingAddress, type Campaign, type CampaignReview, type Eligibility, type PromoDiscount } from "@/services/booking";
+import { GATEWAY_LABEL, UPI_ID_PATTERN, UTR_PATTERN, notAvailableYet, paymentsService, pickGateway, upiCollectOf, type BankTransferDetails, type GatewayStatus, type PayMethod, type PaymentIntent, type PaymentPurpose, type PaymentSummary } from "@/services/payments";
+import { reservationOffered, reservationOfferLine, reservationService } from "@/services/reservation";
 
 /**
  * Review & pay (5204:64952, 5204:65488 for UPI, 5199:7072 for direct
  * banking): the campaign and billing summary, how to pay — card or UPI
  * through the configured gateway, or a bank transfer against ADX's account
  * with the UTR claimed here — the promo code, and the total. The card path
- * goes on to 5204:67916; UPI opens the gateway from here.
+ * goes on to 5204:67916; UPI opens the gateway from here. RF-1: a big
+ * checkout may be reserved first against a fee (`POST /campaigns/:id/reserve`),
+ * paid from the wallet or through the same intents with
+ * `purpose: 'RESERVATION_FEE'`; once paid, the buttons collect the balance.
+ * UP-1: the UPI id rides on the intent — Cashfree sends a collect request.
  */
 export default function PayPage({ params }: { params: Promise<{ id: string }> }) {
     const id = useCampaignId(params);
@@ -46,6 +53,13 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const draft = React.useMemo(() => billingDraft.read(campaign.id), [campaign.id]);
+
+    /* RF-1: the reservation as it stands, and the offer the review makes. */
+    const reservation = campaign.reservation ?? null;
+    const feeDue = reservation?.status === "DUE";
+    const feePaid = reservation?.status === "PAID";
+    const offer = review?.reservationFee ?? null;
+    const retainPct = offer?.retainPct ?? null;
 
     React.useEffect(() => {
         let cancelled = false;
@@ -78,7 +92,12 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
     }, [advertiser]);
 
     const charges = review ? chargesOf(review) : estimateCart(campaign.spots.map((spot) => ({ ratePerDay: spot.ratePerDay, print: campaign.fulfilment !== "ADVERTISER_SHIPS" })), flightDays(campaign.startDate, campaign.endDate));
+    /* The full payment's amount is already total − fee on the server once the fee is PAID; the fee itself while it is DUE. */
+    const payable = feePaid && reservation?.payable ? Number(reservation.payable) : charges.total;
+    const collecting = feeDue && reservation ? Number(reservation.fee) : payable;
+    const purpose: PaymentPurpose | undefined = feeDue ? "RESERVATION_FEE" : undefined;
     const gateway = gateways ? pickGateway(gateways) : null;
+    const upiValid = !upiId || UPI_ID_PATTERN.test(upiId.trim());
     const needsInsertionOrder = review ? !insertionOrderAccepted(review) : false;
     const needsPlatform = eligibility?.blockedBy.includes("AGREEMENT") ?? false;
     const profileIncomplete = eligibility?.blockedBy.includes("PROFILE") ?? false;
@@ -95,10 +114,34 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
     };
 
     const blocked = suspended ? "This account cannot start a new campaign right now. Contact ADX support." : profileIncomplete ? "Complete your billing details before paying." : signing ? "The insertion order has to be signed before this campaign can be paid." : null;
+    const canReserve = !!review && reservationOffered(offer, reservation) && !blocked && review.clashes.length === 0;
 
     const gates = async () => {
         if (!advertiser) throw new ApiError(0, "NO_ADVERTISER", "Your advertiser account could not be read.");
         await recordAgreements(advertiser, campaign.id, review, eligibility);
+    };
+
+    /** RF-1: the two refusals the reserve and fee doors make, in the page's own words. */
+    const reservationMessage = (caught: unknown, fallback: string): string => {
+        if (caught instanceof ApiError && caught.code === "RESERVATION_NOT_OFFERED") return caught.message || "Reserving for a fee is not offered on this checkout — pay in full to book.";
+        if (caught instanceof ApiError && caught.code === "RESERVATION_FEE_LAPSED") return "The time to pay the reservation fee has passed. Reserve again, or pay in full.";
+        return messageOf(caught, fallback);
+    };
+
+    const openGateway = async (method: PayMethod) => {
+        if (!gateway) return;
+        const win = reserveCheckoutWindow();
+        try {
+            await gates();
+            const launched = await launchGateway(campaign.id, gateway.gateway, method, win, { purpose, ...(method === "UPI" && upiId.trim() ? { upiId: upiId.trim() } : {}) });
+            const collect = upiCollectOf(launched.intent);
+            if (collect?.requested) toast.success(`Approve the ${rupees(launched.intent.payment.amount)} request in the UPI app for ${collect.upiId}.`);
+            else if (collect && !collect.requested) toast.message("Cashfree could not send a collect request to that UPI id — pay on its page instead.");
+            router.push(`${returnHref(campaign.id, launched.intent.payment.id, purpose)}${collect?.requested ? "&collect=1" : ""}`);
+        } catch (caught) {
+            win?.close();
+            throw caught;
+        }
     };
 
     const continueWithCard = async () => {
@@ -106,26 +149,58 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
         setBusy(true);
         setError(null);
         try {
+            if (feeDue) {
+                /* The fee goes straight to the gateway's page — the card page is for the whole campaign. */
+                await openGateway("CARD");
+                return;
+            }
             await gates();
             router.push(stepHref(campaign.id, "pay/card"));
         } catch (caught) {
-            setError(messageOf(caught, "Could not continue to the card page."));
+            setError(reservationMessage(caught, "Could not continue to the card page."));
             setBusy(false);
         }
     };
 
     const payWithUpi = async () => {
-        if (busy || !gateway) return;
+        if (busy || !gateway || !upiValid) return;
         setBusy(true);
         setError(null);
-        const win = reserveCheckoutWindow();
         try {
-            await gates();
-            const launched = await launchGateway(campaign.id, gateway.gateway, "UPI", win);
-            router.push(returnHref(campaign.id, launched.intent.payment.id));
+            await openGateway("UPI");
         } catch (caught) {
-            win?.close();
-            setError(messageOf(caught, "Could not open the payment page."));
+            setError(reservationMessage(caught, "Could not open the payment page."));
+            setBusy(false);
+        }
+    };
+
+    const reserve = async () => {
+        if (busy || !canReserve) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const answer = await reservationService.reserve<Campaign, CampaignReview>(campaign.id);
+            ready.applyCampaign(answer.campaign);
+            ready.applyReview(answer.review);
+            toast.success(`Spots reserved. Pay the ${rupees(answer.reservation.fee)} fee within ${offer?.payWithinMinutes ?? 60} minutes to hold them.`);
+        } catch (caught) {
+            setError(reservationMessage(caught, "Could not reserve these spots."));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const payFeeFromWallet = async () => {
+        if (busy || !reservation) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const answer = await reservationService.payFromWallet<Campaign>(campaign.id);
+            ready.applyCampaign(answer.campaign);
+            toast.success(`Reservation fee of ${rupees(answer.reservation.fee)} taken from your wallet. The spots are held.`);
+        } catch (caught) {
+            setError(reservationMessage(caught, "Could not take the fee from your wallet — top it up, or pay the fee by card, UPI or bank transfer."));
+        } finally {
             setBusy(false);
         }
     };
@@ -159,17 +234,53 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                 </BookingCard>
 
                 <BookingCard className="p-0">
-                    <h2 className="border-b border-line px-6 py-4 text-base font-semibold text-ink">Choose how to pay</h2>
+                    <h2 className="border-b border-line px-6 py-4 text-base font-semibold text-ink">{feeDue ? "Pay the reservation fee" : feePaid ? "Pay the balance" : "Choose how to pay"}</h2>
                     <div className="space-y-3 px-4 py-4">
+                        {reservation && (reservation.status === "DUE" || reservation.status === "PAID" || reservation.status === "LAPSED" || reservation.status === "RETAINED") && (
+                            <ReservationPanel reservation={reservation} retainPct={retainPct}>
+                                {feeDue && (
+                                    <button type="button" onClick={() => void payFeeFromWallet()} disabled={busy || !!blocked} className={smallButton}>
+                                        {busy ? "Please wait…" : `Pay ${rupees(reservation.fee)} from my wallet`}
+                                    </button>
+                                )}
+                            </ReservationPanel>
+                        )}
+                        {feeDue && <p className="px-1 text-xs text-dim">Or pay the fee by card, UPI or bank transfer below — the rest of the checkout waits until the spots are held.</p>}
                         <MethodRow checked={method === "CARD"} onSelect={() => setMethod("CARD")} label="Credit / debit card" trailing={<CardMarks />} />
                         <MethodRow checked={method === "UPI"} onSelect={() => setMethod("UPI")} label="UPI" centred />
                         {method === "UPI" && (
                             <div className="px-1">
-                                <FloatingField label="UPI ID" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@okaxis" invalid={!!upiId && !UPI_ID_PATTERN.test(upiId)} />
-                                <p className="mt-2 text-xs text-dim">{gateway ? `${GATEWAY_LABEL[gateway.gateway]}'s secure page asks for the UPI ID again — ADX cannot pass it on yet. Approve the request in your UPI app to complete payment.` : "Approve the request in your UPI app to complete payment."}</p>
+                                <FloatingField label="UPI ID (optional)" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@okaxis" invalid={!upiValid} autoComplete="off" />
+                                <p className="mt-2 text-xs text-dim">
+                                    {gateway?.gateway === "CASHFREE"
+                                        ? "With a UPI id, Cashfree sends a collect request straight to your UPI app — approve it there. Its page still opens in case you would rather scan."
+                                        : gateway?.gateway === "RAZORPAY"
+                                          ? "Your UPI id is filled in on Razorpay's page; approve the request in your UPI app to complete payment."
+                                          : "Approve the request in your UPI app to complete payment."}
+                                </p>
                             </div>
                         )}
-                        {bank && <BankTransferRow campaignId={campaign.id} details={bank} checked={method === "BANK_TRANSFER"} onSelect={() => setMethod("BANK_TRANSFER")} amount={charges.total} disabled={!!blocked || !agreementsOk} onBeforeIntent={gates} onClaimed={(payment) => router.push(`${stepHref(campaign.id, "submitted")}?payment=${encodeURIComponent(payment.id)}`)} />}
+                        {bank && (
+                            <BankTransferRow
+                                key={purpose ?? "SETTLEMENT"}
+                                campaignId={campaign.id}
+                                details={bank}
+                                checked={method === "BANK_TRANSFER"}
+                                onSelect={() => setMethod("BANK_TRANSFER")}
+                                amount={collecting}
+                                purpose={purpose}
+                                disabled={!!blocked || !agreementsOk}
+                                onBeforeIntent={gates}
+                                onClaimed={(payment) => {
+                                    if (purpose === "RESERVATION_FEE") {
+                                        toast.success("Transfer recorded. The spots are held once ADX confirms it.");
+                                        ready.reload();
+                                        return;
+                                    }
+                                    router.push(`${stepHref(campaign.id, "submitted")}?payment=${encodeURIComponent(payment.id)}`);
+                                }}
+                            />
+                        )}
 
                         {gateways && !gateway && method !== "BANK_TRANSFER" && <p className="rounded-md bg-ground px-3 py-2 text-sm text-dim">No card or UPI gateway is set up yet — ask ADX{bank ? ", or pay by bank transfer" : ""}.</p>}
 
@@ -239,19 +350,21 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                             </p>
                             <div className="mt-4 flex flex-wrap items-end justify-between gap-4 px-1">
                                 <div>
-                                    <p className="text-2xl font-semibold text-ink">{rupees(charges.total)}</p>
+                                    <p className="text-2xl font-semibold text-ink">{rupees(collecting)}</p>
+                                    {feeDue && <p className="text-xs text-dim">Reservation fee · the campaign total is {rupees(charges.total)}</p>}
+                                    {feePaid && <p className="text-xs text-dim">Balance · {rupees(charges.total)} less the {rupees(reservation!.fee)} fee already paid</p>}
                                     <button type="button" onClick={() => setBreakdown((b) => !b)} className="mt-1 text-sm text-dim underline underline-offset-2 hover:text-ink">
                                         {breakdown ? "Hide price breakdown" : "Review price breakdown"}
                                     </button>
                                 </div>
                                 {method === "CARD" && (
                                     <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk} onClick={() => void continueWithCard()} className={primaryButton}>
-                                        {busy ? "Please wait…" : "Continue with card"}
+                                        {busy ? "Please wait…" : feeDue ? `Pay ${rupees(collecting)} fee with card` : feePaid ? `Pay the balance ${rupees(collecting)} with card` : "Continue with card"}
                                     </button>
                                 )}
                                 {method === "UPI" && (
-                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk} onClick={() => void payWithUpi()} className={primaryButton}>
-                                        {busy ? "Opening…" : `Pay ${rupees(charges.total)} with UPI`}
+                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk || !upiValid} onClick={() => void payWithUpi()} className={primaryButton}>
+                                        {busy ? "Opening…" : feeDue ? `Pay ${rupees(collecting)} fee with UPI` : feePaid ? `Pay the balance ${rupees(collecting)} with UPI` : `Pay ${rupees(collecting)} with UPI`}
                                     </button>
                                 )}
                             </div>
@@ -261,12 +374,23 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                                     {charges.fees.map((fee) => (
                                         <Line key={fee.label} label={fee.label} value={rupees(fee.amount)} />
                                     ))}
-                                    <Line label="GST" value={rupees(charges.gst)} />
-                                    {charges.discount > 0 && <Line label="Discount" value={`− ${rupees(charges.discount)}`} />}
+                                    {charges.discount > 0 && <Line label="Discount" value={discountLabel(charges)} />}
+                                    <Line label={charges.discount > 0 ? "GST on the discounted value" : "GST"} value={rupees(charges.gst)} />
                                     <Line label="Total" value={rupees(charges.total)} strong />
+                                    {feePaid && reservation && <Line label="Reservation fee paid" value={`− ${rupees(reservation.fee)}`} />}
+                                    {feePaid && <Line label="Balance payable" value={rupees(payable)} strong />}
                                 </dl>
                             )}
                             <ErrorNote message={error} className="mt-4" />
+                            {canReserve && offer && (
+                                <div className="mt-4 rounded-md border border-line bg-ground px-4 py-3">
+                                    <p className="text-sm font-semibold text-ink">Not ready to pay in full?</p>
+                                    <p className="mt-1 text-sm text-ink">{reservationOfferLine(offer)}</p>
+                                    <button type="button" onClick={() => void reserve()} disabled={busy} className={`${smallButton} mt-3`}>
+                                        {busy ? "Please wait…" : `Reserve these spots for ${offer.holdHours} hours`}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </BookingCard>
@@ -327,7 +451,7 @@ function CardMarks() {
  * the BANK_TRANSFER intent carries the reference and the amount; the claim
  * is `POST /payments/:id/bank-transfer/submit`, and ops confirm it later.
  */
-function BankTransferRow({ campaignId, details, checked, onSelect, amount, disabled, onBeforeIntent, onClaimed }: { campaignId: string; details: BankTransferDetails; checked: boolean; onSelect: () => void; amount: number; disabled: boolean; onBeforeIntent: () => Promise<void>; onClaimed: (payment: PaymentSummary) => void }) {
+function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpose, disabled, onBeforeIntent, onClaimed }: { campaignId: string; details: BankTransferDetails; checked: boolean; onSelect: () => void; amount: number; purpose?: PaymentPurpose; disabled: boolean; onBeforeIntent: () => Promise<void>; onClaimed: (payment: PaymentSummary) => void }) {
     const [intent, setIntent] = React.useState<PaymentIntent | null>(null);
     const [utr, setUtr] = React.useState("");
     const [paidOn, setPaidOn] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -342,7 +466,7 @@ function BankTransferRow({ campaignId, details, checked, onSelect, amount, disab
         setError(null);
         try {
             await onBeforeIntent();
-            const answer = await paymentsService.createIntent({ campaignId, gateway: "BANK_TRANSFER" });
+            const answer = await paymentsService.createIntent({ campaignId, gateway: "BANK_TRANSFER", ...(purpose ? { purpose } : {}) });
             setIntent(answer);
             if (answer.bankTransfer?.amount) setPaid(String(Math.round(Number(answer.bankTransfer.amount))));
         } catch (caught) {
@@ -400,7 +524,7 @@ function BankTransferRow({ campaignId, details, checked, onSelect, amount, disab
             {checked && (
                 <div className="px-4 pb-4">
                     <div className="rounded-md bg-ground p-4">
-                        <p className="text-sm font-semibold text-ink">Transfer the exact total amount to the bank account below:</p>
+                        <p className="text-sm font-semibold text-ink">{purpose === "RESERVATION_FEE" ? "Transfer the exact reservation fee to the bank account below:" : "Transfer the exact total amount to the bank account below:"}</p>
                         <dl className="mt-2 divide-y divide-line text-sm">
                             <BankRow label="Bank Name" value={`${account.bank}${account.branch ? ` · ${account.branch}` : ""}`} />
                             <BankRow label="Account Name" value={account.beneficiary} onCopy={() => void copy("Account Name", account.beneficiary)} copied={copied === "Account Name"} />

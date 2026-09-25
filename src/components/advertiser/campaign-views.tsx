@@ -2,10 +2,16 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { messageOf } from "@/lib/api-client";
 import { PageHeading, Panel } from "@/components/workspace/page-heading";
-import { ActivityList, btnOutline, btnPrimary, btnSmall, DocRow, KeyValue, PrivateImage, StatusChip } from "@/components/advertiser/bits";
+import { ActivityList, btnOutline, btnPrimary, btnSmall, DocRow, inputClass, KeyValue, PrivateImage, StatusChip } from "@/components/advertiser/bits";
 import { PerformanceStrip, TrackingPanel } from "@/components/advertiser/campaign-extras";
+import { ReservationPanel } from "@/components/booking/reservation-panel";
+import { reservationOpen } from "@/services/reservation";
 import {
+    advertiserWorkspace,
     campaignActivity,
     campaignContinueHref,
     campaignStatusLabel,
@@ -19,6 +25,7 @@ import {
     daysLabel,
     deliveryActivity,
     fileNameOf,
+    orderRef,
     PHOTO_KIND_LABEL,
     proofStatus,
     rupees,
@@ -49,10 +56,17 @@ const pastPayment = (campaign: CampaignDetail) => !!campaign.paidAt || ["SCHEDUL
 /* 02 · Campaign details (5204:72402)                                  */
 /* ------------------------------------------------------------------ */
 
-export function CampaignInFlight({ data }: { data: CampaignPageData }) {
+export function CampaignInFlight({ data, reload }: { data: CampaignPageData; reload?: () => void }) {
     const { campaign, invoice, codes, analytics, orders, advertiserName } = data;
     const status = campaignStatusLabel(campaign);
     const paid = pastPayment(campaign);
+    /* RF-1: the reservation as it stands; the pay CTA follows it. */
+    const reservation = campaign.reservation ?? null;
+    const feeDue = reservation?.status === "DUE";
+    const feePaid = reservation?.status === "PAID";
+    /* DQ-1: the desk's quote on an ADX-design campaign. */
+    const quoted = campaign.creativePath === "ADX_DESIGN_AGENCY" && campaign.designQuoteStatus === "QUOTED";
+    const awaitingQuote = campaign.creativePath === "ADX_DESIGN_AGENCY" && !campaign.designQuoteStatus && !paid;
     const placements = campaign.spots.filter((s) => s.status !== "CANCELLED");
     const city = campaign.city ?? campaign.targetLocation ?? placements[0]?.listing.city ?? null;
     const brief = currentCreativeFor(campaign.creatives, null);
@@ -66,7 +80,7 @@ export function CampaignInFlight({ data }: { data: CampaignPageData }) {
             </Link>
         ) : campaign.status === "PENDING_PAYMENT" ? (
             <Link href={`/advertiser/campaigns/${campaign.id}/pay`} className={btnPrimary}>
-                Pay now
+                {feeDue ? `Pay the ${rupees(reservation!.fee)} reservation fee` : feePaid ? `Pay the balance · ${rupees(reservation!.payable)}` : "Pay now"}
             </Link>
         ) : campaign.status === "CANCELLED" ? null : (
             <Link href={`/advertiser/campaigns/${campaign.id}/creative`} className={btnPrimary}>
@@ -103,7 +117,30 @@ export function CampaignInFlight({ data }: { data: CampaignPageData }) {
             <Panel className="mt-6">
                 <h2 className="text-base font-semibold text-ink">{status.label}</h2>
                 <p className="mt-2 text-sm text-dim">{campaignStatusLine(campaign)}</p>
+                {reservation && (reservationOpen(reservation) || reservation.status === "LAPSED" || reservation.status === "RETAINED") && (
+                    <ReservationPanel reservation={reservation} retainPct={null} className="mt-4">
+                        {campaign.status === "PENDING_PAYMENT" && (
+                            <Link href={`/advertiser/campaigns/${campaign.id}/pay`} className={btnSmall}>
+                                {feeDue ? "Pay the reservation fee" : feePaid ? `Pay the balance · ${rupees(reservation.payable)}` : "Pay now"}
+                            </Link>
+                        )}
+                    </ReservationPanel>
+                )}
             </Panel>
+
+            {(quoted || awaitingQuote) && (
+                <Panel className="mt-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h2 className="text-base font-semibold text-ink">{quoted ? `ADX quoted ${rupees(campaign.designQuoteAmount)} for the design work` : "Design by ADX · awaiting quote"}</h2>
+                            <p className="mt-1 text-sm text-dim">{quoted ? (campaign.designQuoteNote ? campaign.designQuoteNote : "Accept it and the design starts; the fee joins the campaign's charges. Decline and you supply the artwork.") : "The ADX desk is reading your brief and will quote the scope, price and delivery date."}</p>
+                        </div>
+                        <Link href={`/advertiser/campaigns/${campaign.id}/creative/request`} className={quoted ? btnPrimary : btnOutline}>
+                            {quoted ? "Answer the quote" : "View the request"}
+                        </Link>
+                    </div>
+                </Panel>
+            )}
 
             <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_270px]">
                 <div className="min-w-0">
@@ -150,9 +187,12 @@ export function CampaignInFlight({ data }: { data: CampaignPageData }) {
 
                     <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
                         <p className="text-sm text-dim">Need to change or cancel this campaign?</p>
-                        <Link href={`/advertiser/requests/new?campaign=${campaign.id}&topic=${campaign.status === "CANCELLED" ? "PAYMENT" : "CHANGE"}`} className={btnOutline}>
-                            Create a request
-                        </Link>
+                        <div className="flex flex-wrap gap-2">
+                            {(campaign.status === "DRAFT" || campaign.status === "PENDING_PAYMENT") && <CancelDoor campaign={campaign} onCancelled={reload} />}
+                            <Link href={`/advertiser/requests/new?campaign=${campaign.id}&topic=${campaign.status === "CANCELLED" ? "PAYMENT" : "CHANGE"}`} className={btnOutline}>
+                                Create a request
+                            </Link>
+                        </div>
                     </div>
                 </div>
 
@@ -186,6 +226,62 @@ export function CampaignInFlight({ data }: { data: CampaignPageData }) {
     );
 }
 
+/**
+ * The advertiser's own cancel on a draft or an unpaid campaign —
+ * `POST /campaigns/:id/cancel`. RF-1: a campaign whose reservation fee is
+ * PAID forfeits part of it, and the confirm says so before the click.
+ */
+function CancelDoor({ campaign, onCancelled }: { campaign: CampaignDetail; onCancelled?: () => void }) {
+    const router = useRouter();
+    const [open, setOpen] = React.useState(false);
+    const [reason, setReason] = React.useState("");
+    const [busy, setBusy] = React.useState(false);
+    const reserved = campaign.reservation?.status === "PAID";
+    const cancel = async () => {
+        if (busy || reason.trim().length < 3) return;
+        setBusy(true);
+        try {
+            await advertiserWorkspace.cancelCampaign(campaign.id, reason.trim());
+            toast.success(reserved ? "Campaign cancelled. Part of the reservation fee is kept; the rest is in your wallet." : "Campaign cancelled.");
+            setOpen(false);
+            if (onCancelled) onCancelled();
+            else router.refresh();
+        } catch (caught) {
+            toast.error(messageOf(caught, "Could not cancel this campaign."));
+        } finally {
+            setBusy(false);
+        }
+    };
+    if (!open) {
+        return (
+            <button type="button" onClick={() => setOpen(true)} className={`${btnOutline} text-brand-bright`}>
+                Cancel campaign
+            </button>
+        );
+    }
+    return (
+        <div className="w-full rounded-lg border border-[#f3c1c1] bg-[#fdf2f2] p-4">
+            <p className="text-sm font-semibold text-ink">Cancel this campaign?</p>
+            <p className="mt-1 text-sm text-ink">
+                {reserved
+                    ? `The spots are reserved against a ${rupees(campaign.reservation!.fee)} fee. Cancelling keeps part of that fee for ADX (the platform's retained share) and returns the rest to your wallet; the spots are released.`
+                    : campaign.status === "PENDING_PAYMENT"
+                      ? "The spots are released and nothing is charged."
+                      : "The draft is closed; nothing is charged."}
+            </p>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why? (a few words, kept on the record)" className={`${inputClass} mt-3`} maxLength={300} autoFocus />
+            <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={() => void cancel()} disabled={busy || reason.trim().length < 3} className={btnPrimary}>
+                    {busy ? "Cancelling…" : reserved ? "Cancel and forfeit part of the fee" : "Yes, cancel the campaign"}
+                </button>
+                <button type="button" onClick={() => setOpen(false)} disabled={busy} className={btnOutline}>
+                    Keep it
+                </button>
+            </div>
+        </div>
+    );
+}
+
 function SpotCard({ spot, campaign, order, paid }: { spot: CampaignSpot; campaign: CampaignDetail; order?: AdvertiserOrder; paid: boolean }) {
     const creative = currentCreativeFor(campaign.creatives, spot.id);
     const creativeLabel = creative ? CREATIVE_LABEL[creative.status] : { label: paid ? "Artwork not uploaded" : "Artwork after payment", tone: "neutral" as const };
@@ -196,7 +292,10 @@ function SpotCard({ spot, campaign, order, paid }: { spot: CampaignSpot; campaig
             <PrivateImage src={spot.listing.photos?.[0]?.url ?? null} alt={spot.listing.title} className="size-16 shrink-0 rounded-md object-cover" />
             <div className="min-w-0 flex-1">
                 <p className="text-base font-semibold text-ink">{spot.listing.title}</p>
-                <p className="mt-0.5 text-xs text-dim">{spotLine(spot, campaign.startDate, campaign.endDate)}</p>
+                <p className="mt-0.5 text-xs text-dim">
+                    {order ? `${orderRef(order)} · ` : ""}
+                    {spotLine(spot, campaign.startDate, campaign.endDate)}
+                </p>
                 <p className="mt-1 text-sm font-semibold text-ink">{rupees(spot.lineTotal)} media cost</p>
             </div>
             <div className="flex flex-col items-end gap-2">
@@ -279,7 +378,10 @@ export function CampaignCompleted({ data }: { data: CampaignPageData }) {
                                                 {spot.listing.city && <StatusChip label={spot.listing.city} className="h-5 text-[10px]" />}
                                                 <StatusChip label={dateRange(campaign.startDate, campaign.endDate).replace(/ \d{4}$/, "")} className="h-5 text-[10px]" />
                                             </div>
-                                            <p className="mt-1.5 text-xs font-semibold text-ink">{row?.order.listing.publisher?.name ? `Delivered by ${row.order.listing.publisher.name}` : "Delivery recorded by ADX"}</p>
+                                            <p className="mt-1.5 text-xs font-semibold text-ink">
+                                                {row?.order ? `${orderRef(row.order)} · ` : ""}
+                                                {row?.order.listing.publisher?.name ? `Delivered by ${row.order.listing.publisher.name}` : "Delivery recorded by ADX"}
+                                            </p>
                                         </div>
                                         {proof ? (
                                             row?.order.id ? (

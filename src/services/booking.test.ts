@@ -5,15 +5,18 @@ import {
     chargesOf,
     cityOf,
     creativeFor,
+    discountLabel,
     estimateCart,
     flightDays,
     formatFlight,
+    fulfilmentOfLine,
     isDigital,
     joinBillingAddress,
     normalisePromo,
     orientationOf,
     rupees,
     splitBillingAddress,
+    spotItemsOf,
     stepOf,
     type CampaignReview,
 } from "./booking";
@@ -155,5 +158,31 @@ describe("the billing address", () => {
         expect(joinBillingAddress("24, Whitefield Main Road", "560066")).toBe("24, Whitefield Main Road, 560066");
         expect(splitBillingAddress("24, Whitefield Main Road, 560066")).toEqual({ street: "24, Whitefield Main Road", postalCode: "560066" });
         expect(splitBillingAddress("14, Residency Road, Bengaluru")).toEqual({ street: "14, Residency Road, Bengaluru", postalCode: "" });
+    });
+});
+
+describe("GST-D, DQ-1 and PS-1 on the review", () => {
+    it("carries the discount's GST and the design fee into the charges, and the arithmetic adds up", () => {
+        const charges = chargesOf(review({ discount: "1000.00", discountGst: "153.00", gstAmount: "3807.00", designFee: { amount: "5000.00", gst: "900.00", note: "Two print faces" }, feesTotal: "9000.00", total: "29807.00" }));
+        expect(charges.discount).toBe(1000);
+        expect(charges.discountGst).toBe(153);
+        expect(charges.design).toBe(5000);
+        expect(charges.otherFees).toContainEqual({ label: "Design by ADX", amount: 5000 });
+        expect(charges.fees.find((fee) => fee.label === "Design by ADX")?.amount).toBe(5000);
+        expect(discountLabel(charges)).toBe("− ₹1,000 (incl. GST −₹153)");
+        expect(discountLabel({ discount: 500, discountGst: 0 })).toBe("− ₹500");
+        expect(estimateCart([], 0).discountGst).toBe(0);
+    });
+
+    it("reads a line's own print choice before the campaign's", () => {
+        const campaign = { fulfilment: "ADX_PRINTS" as const };
+        expect(fulfilmentOfLine({ fulfilment: "ADVERTISER_SHIPS" }, campaign)).toBe("ADVERTISER_SHIPS");
+        expect(fulfilmentOfLine({ fulfilment: null }, campaign)).toBe("ADX_PRINTS");
+        expect(fulfilmentOfLine(null, { fulfilment: null })).toBeNull();
+    });
+
+    it("sends the cart's lines with their own print choice, and nothing for the ones that follow the campaign", () => {
+        const line = { title: "x", photo: null, chip: "", area: null, ratePerDay: "100", addedAt: "" };
+        expect(spotItemsOf({ lines: [{ ...line, listingId: "l1", fulfilment: "ADVERTISER_SHIPS" }, { ...line, listingId: "l2" }, { ...line, listingId: "l3", fulfilment: null }] })).toEqual([{ listingId: "l1", fulfilment: "ADVERTISER_SHIPS" }, { listingId: "l2" }, { listingId: "l3" }]);
     });
 });

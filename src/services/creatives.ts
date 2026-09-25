@@ -13,6 +13,9 @@ export type { CampaignCreative, CreativeStatus } from "@/services/planner";
  * (`POST …/creatives/:id/accept`) or sends back with a note
  * (`POST …/creatives/:id/request-changes`). An upload the advertiser makes
  * themselves goes `POST /upload` then `POST /campaigns/:id/creatives`.
+ * DQ-1: before any design, the desk quotes — `designQuote*` on the
+ * campaign — and the advertiser accepts or declines it
+ * (`POST /campaigns/:id/design-quote/respond`).
  */
 
 export type DesignStyle = "BOLD_AND_ENERGETIC" | "CLEAN_AND_MINIMAL" | "WARM_AND_FRIENDLY";
@@ -83,16 +86,22 @@ export function designedCreative(campaign: Pick<Campaign, "creatives">): Campaig
     return currentCreativeFor(designs, last.spotId) ?? last;
 }
 
-export type DesignRequestStage = "NOT_SENT" | "AWAITING_QUOTE" | "ARTWORK_READY" | "CHANGES_REQUESTED" | "IN_REVIEW" | "APPROVED" | "REJECTED";
+export type DesignRequestStage = "NOT_SENT" | "AWAITING_QUOTE" | "QUOTED" | "QUOTE_DECLINED" | "DESIGNING" | "ARTWORK_READY" | "CHANGES_REQUESTED" | "IN_REVIEW" | "APPROVED" | "REJECTED";
 
 /**
  * Where the design request stands, read off the campaign: the brief is the
- * request, and the ADX-designed artwork's status is the rest of the story.
+ * request, the desk's quote and the advertiser's answer come next (DQ-1),
+ * and the ADX-designed artwork's status is the rest of the story.
  */
-export function designRequestStage(campaign: Pick<Campaign, "creativePath" | "creativeConfig" | "creatives">): DesignRequestStage {
+export function designRequestStage(campaign: Pick<Campaign, "creativePath" | "creativeConfig" | "creatives"> & Partial<Pick<Campaign, "designQuoteStatus">>): DesignRequestStage {
     if (!briefOf(campaign)) return "NOT_SENT";
     const design = designedCreative(campaign);
-    if (!design) return "AWAITING_QUOTE";
+    if (!design) {
+        if (campaign.designQuoteStatus === "QUOTED") return "QUOTED";
+        if (campaign.designQuoteStatus === "DECLINED") return "QUOTE_DECLINED";
+        if (campaign.designQuoteStatus === "ACCEPTED") return "DESIGNING";
+        return "AWAITING_QUOTE";
+    }
     switch (design.status) {
         case "AWAITING_ADVERTISER":
             return "ARTWORK_READY";
@@ -110,6 +119,9 @@ export function designRequestStage(campaign: Pick<Campaign, "creativePath" | "cr
 export const STAGE_META: Record<DesignRequestStage, { title: string; line: string; status: string }> = {
     NOT_SENT: { title: "No design request yet", line: "Write a brief and send it, and ADX will quote the artwork your spaces need.", status: "Not sent" },
     AWAITING_QUOTE: { title: "Request received · Awaiting quote", line: "ADX will review your brief and share the scope, price, and delivery date for your approval.", status: "Awaiting quote" },
+    QUOTED: { title: "Quote ready · Your answer needed", line: "ADX has quoted the design work from your brief. Accept it and design starts; decline it and the campaign stays yours to supply artwork for.", status: "Quoted" },
+    QUOTE_DECLINED: { title: "Quote declined", line: "You declined ADX's quote. Upload your own artwork from the campaign, or ask support for a fresh quote.", status: "Declined" },
+    DESIGNING: { title: "Quote accepted · Design in progress", line: "ADX is designing the artwork from your brief. It appears here for your approval once ready; the fee is on the campaign's charges.", status: "In design" },
     ARTWORK_READY: { title: "Artwork ready · Your approval needed", line: "ADX has designed the artwork from your brief. Approve it, or send it back with what to change.", status: "Awaiting your approval" },
     CHANGES_REQUESTED: { title: "Changes requested", line: "ADX has your note and will send a revised design. Nothing prints until you approve it.", status: "Changes requested" },
     IN_REVIEW: { title: "Design accepted · With the ADX desk", line: "You accepted the design. The ADX desk checks it against each space before it prints.", status: "In review" },
@@ -183,6 +195,8 @@ export interface SubmitCreativeInput {
 }
 
 export const creativesService = {
+    /** DQ-1: the advertiser's answer to the desk's quote; answers the campaign. */
+    respondToQuote: (campaignId: string, decision: "ACCEPTED" | "DECLINED") => api.post<Campaign>(`/campaigns/${encodeURIComponent(campaignId)}/design-quote/respond`, { decision }),
     /** `POST /upload` as multipart — the artwork file, filed under CAMPAIGN_CREATIVE. */
     upload: (file: File) => {
         const body = new FormData();

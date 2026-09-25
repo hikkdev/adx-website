@@ -1,4 +1,6 @@
 import { api, apiBlob, ApiError } from "@/lib/api-client";
+import type { TwoFactorStatus } from "@/services/auth";
+import type { ReservationFeeOffer, ReservationView } from "@/services/reservation";
 
 /**
  * The advertiser workspace (DR 12 board 07) — everything the seven pages
@@ -140,9 +142,19 @@ export interface CampaignDetail {
     codes: TrackingCode[];
     refund?: CampaignRefund | null;
     landingPage?: { id: string; slug: string; status: string; url: string; publishedAt: string | null } | null;
+    /** RF-1: the reservation as it stands, or null when none was ever taken. */
+    reservation?: ReservationView | null;
+    /** DQ-1: the desk's design quote on an ADX-design campaign. */
+    designQuoteAmount?: string | null;
+    designQuoteStatus?: DesignQuoteStatus | null;
+    designQuoteNote?: string | null;
+    designQuotedAt?: string | null;
+    designQuoteRespondedAt?: string | null;
     createdAt: string;
     updatedAt: string;
 }
+
+export type DesignQuoteStatus = "QUOTED" | "ACCEPTED" | "DECLINED";
 
 export interface Metric {
     value: number | null;
@@ -178,6 +190,8 @@ export interface ReviewLine {
     fees: { label: string; amount: string }[];
     gst: string;
     gross: string;
+    /** PS-1: the print choice this line was priced under; null means the campaign's. */
+    fulfilment?: "ADX_PRINTS" | "ADVERTISER_SHIPS" | null;
 }
 
 export interface CampaignReview {
@@ -187,6 +201,12 @@ export interface CampaignReview {
     feesTotal: string;
     gstAmount: string;
     discount: string;
+    /** GST-D: the tax the discount took off with it; `gstAmount` is already net of it. */
+    discountGst?: string;
+    /** DQ-1: ADX's accepted design quote as a fee on the booking. */
+    designFee?: { amount: string; gst: string; note: string | null } | null;
+    /** RF-1: what reserving would cost on this checkout. */
+    reservationFee?: ReservationFeeOffer | null;
     total: string;
     days: number;
 }
@@ -226,6 +246,8 @@ export interface OrderListing {
 
 export interface AdvertiserOrder {
     id: string;
+    /** BK-1: BKG-DDMM-YYNN; null on rows from before the ids. */
+    displayId?: string | null;
     status: OrderStatus;
     campaignName: string | null;
     startDate: string | null;
@@ -240,6 +262,8 @@ export interface AdvertiserOrder {
     cancelledAt: string | null;
     selfInstallInstallPhotoUrl?: string | null;
     selfInstallConditionPhotoUrls?: string[];
+    /** SI-N: what the publisher wrote beside their own installation photos. */
+    selfInstallNotes?: string | null;
     verification?: { verifiedAt: string | null; checklistPassed?: boolean; qrScanned?: boolean } | null;
     campaignSpot?: { campaignId: string } | null;
     createdAt: string;
@@ -457,6 +481,9 @@ export interface AdvertiserProfile {
     billingAddress: string | null;
     city: string | null;
     state: string | null;
+    /** AD-1: the PIN and the country on the billing address. */
+    postalCode?: string | null;
+    country?: string | null;
     industry?: string | null;
     kycStatus: "PENDING" | "VERIFIED" | "REJECTED" | "NEEDS_INFO" | string;
     verified?: boolean;
@@ -471,6 +498,8 @@ export interface AdvertiserProfilePatch {
     billingAddress?: string;
     city?: string;
     state?: string;
+    postalCode?: string | null;
+    country?: string | null;
     industry?: string | null;
 }
 
@@ -508,13 +537,18 @@ export interface DeviceSession {
     id: string;
     userAgent: string | null;
     ipAddress: string | null;
+    /** SL-1: where the address was last seen — null until looked up, or when the address is private. */
+    city?: string | null;
+    region?: string | null;
+    country?: string | null;
     lastUsedAt: string | null;
     createdAt: string;
     expiresAt: string;
     current?: boolean;
 }
 
-export type NotificationType = "ORDER" | "BOOKING" | "PAYOUT" | "KYC" | "MESSAGE" | "SYSTEM" | "DISPUTE" | "ANNOUNCEMENT";
+/** WS-1: WEEKLY_SUMMARY is the Monday digest of the account's campaigns. */
+export type NotificationType = "ORDER" | "BOOKING" | "PAYOUT" | "KYC" | "MESSAGE" | "SYSTEM" | "DISPUTE" | "ANNOUNCEMENT" | "WEEKLY_SUMMARY";
 export type NotificationChannel = "IN_APP" | "PUSH" | "EMAIL" | "SMS";
 
 export interface NotificationPreference {
@@ -524,12 +558,7 @@ export interface NotificationPreference {
     mandatory?: boolean;
 }
 
-export interface TwoFactorStatus {
-    methods: string[];
-    authenticator: { enrolled?: boolean; enrolledAt?: string | null; recoveryCodesLeft?: number; recoveryCodesTotal?: number } | null;
-    policy?: unknown;
-    mustEnrolAuthenticator: boolean;
-}
+export type { TwoFactorStatus } from "@/services/auth";
 
 export interface AdvertiserKyc {
     id: string;
@@ -615,6 +644,10 @@ export const advertiserWorkspace = {
     revokeOtherSessions: () => api.delete<{ revoked: number }>("/users/me/sessions"),
     changePassword: (body: { currentPassword?: string; newPassword: string }) => api.post<unknown>("/auth/change-password", body),
     twoFactorStatus: () => api.get<TwoFactorStatus>("/auth/2fa/status"),
+    /** DQ-1: the advertiser's answer to the desk's design quote; answers the campaign detail. */
+    respondToDesignQuote: (id: string, decision: "ACCEPTED" | "DECLINED") => api.post<CampaignDetail>(`/campaigns/${encodeURIComponent(id)}/design-quote/respond`, { decision }),
+    /** The advertiser's own cancel: a draft or an unpaid campaign; a reserved one forfeits part of the fee. */
+    cancelCampaign: (id: string, reason: string) => api.post<{ released: boolean; refundNeeded: boolean }>(`/campaigns/${encodeURIComponent(id)}/cancel`, { reason }),
     preferences: () => api.get<NotificationPreference[]>("/notifications/preferences"),
     savePreferences: (rows: NotificationPreference[]) => api.put<unknown>("/notifications/preferences", rows),
 };
@@ -1074,7 +1107,8 @@ export function detailLines(lines: InvoiceDetailLine[], campaign: Pick<CampaignD
             const gst = money(line.gstAmount);
             const quantity = money(line.quantity);
             return {
-                description: line.description,
+                /* GST-D: the discount line carries a negative gstAmount — the tax that came off with it. */
+                description: line.kind === "DISCOUNT" && gst < 0 ? `${line.description} (incl. GST ${rupees(gst)})` : line.description,
                 period: line.kind in PERIOD ? PERIOD[line.kind]! : period,
                 quantity: line.kind === "MEDIA" ? `${quantity} booking${quantity === 1 ? "" : "s"}` : String(quantity),
                 taxable,
@@ -1233,6 +1267,17 @@ export function orderSessions<T extends Pick<DeviceSession, "current">>(sessions
     return [...sessions.filter((s) => s.current === true), ...sessions.filter((s) => s.current !== true)];
 }
 
+/** SL-1: "Bengaluru, India" — the city and the country when known, the region standing in for a missing city; null when nothing was looked up. */
+export function sessionPlace(session: Pick<DeviceSession, "city" | "region" | "country">): string | null {
+    const parts = [session.city || session.region || null, session.country || null].filter((part): part is string => !!part);
+    return parts.length ? parts.join(", ") : null;
+}
+
+/** BK-1: the booking's id as people quote it — BKG-DDMM-YYNN, or the tail of the internal id on a row from before the ids. */
+export function orderRef(order: Pick<AdvertiserOrder, "id" | "displayId">): string {
+    return order.displayId || `BKG-${order.id.slice(-6).toUpperCase()}`;
+}
+
 export interface PreferenceGroup {
     id: string;
     label: string;
@@ -1245,7 +1290,7 @@ export const PREFERENCE_GROUPS: PreferenceGroup[] = [
     { id: "campaign", label: "Campaign updates", hint: "Artwork approval, booking confirmation and campaign dates", types: ["BOOKING"] },
     { id: "delivery", label: "Delivery proof & requests", hint: "Notify me when proof arrives or my support request changes", types: ["ORDER", "MESSAGE"] },
     { id: "billing", label: "Invoices & payments", hint: "Payment receipts, tax invoices and refund updates", types: ["PAYOUT"] },
-    { id: "weekly", label: "Weekly campaign summary", hint: "A summary of my account activity every Monday", types: [] },
+    { id: "weekly", label: "Weekly campaign summary", hint: "A summary of my campaigns by email every Monday", types: ["WEEKLY_SUMMARY"] },
 ];
 
 /** A group is on when any of its switchable rows is on. */

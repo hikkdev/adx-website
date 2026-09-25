@@ -54,7 +54,7 @@ export default function AccountPage() {
     }
 
     const { profile, advertiser, sessions, twoFactor, preferences, kyc } = state.value;
-    const stamp = `${profile.name ?? ""}|${profile.email ?? ""}|${profile.emailVerifiedAt ?? ""}|${profile.hasPassword}|${advertiser?.gstin ?? ""}|${advertiser?.billingAddress ?? ""}`;
+    const stamp = `${profile.name ?? ""}|${profile.email ?? ""}|${profile.emailVerifiedAt ?? ""}|${profile.hasPassword}|${advertiser?.gstin ?? ""}|${advertiser?.billingAddress ?? ""}|${advertiser?.postalCode ?? ""}|${advertiser?.country ?? ""}`;
 
     return (
         <>
@@ -67,7 +67,7 @@ export default function AccountPage() {
                 </div>
                 <div className="space-y-4">
                     <PasswordCard key={`password-${profile.hasPassword}`} profile={profile} onChanged={state.reload} />
-                    <TwoFactorCard status={twoFactor} />
+                    <TwoFactorCard status={twoFactor} onChanged={state.reload} />
                     <NotificationsCard preferences={preferences} onChanged={state.reload} />
                 </div>
             </div>

@@ -63,5 +63,5 @@ export default function CampaignPage() {
             </>
         );
     }
-    return state.value.campaign.status === "COMPLETED" ? <CampaignCompleted data={state.value} /> : <CampaignInFlight data={state.value} />;
+    return state.value.campaign.status === "COMPLETED" ? <CampaignCompleted data={state.value} /> : <CampaignInFlight data={state.value} reload={state.reload} />;
 }

@@ -70,3 +70,15 @@ describe("the design request", () => {
         expect(designRequestStage({ ...brief, creatives: [creative({ status: "REJECTED" })] })).toBe("REJECTED");
     });
 });
+
+describe("DQ-1: the desk's quote before any design", () => {
+    it("reads the quote's standing off the campaign while no design exists", () => {
+        const brief = { creativePath: "ADX_DESIGN_AGENCY" as const, creativeConfig: { objective: "Launch", keyMessage: "Now open", style: "CLEAN_AND_MINIMAL" } };
+        expect(designRequestStage({ ...brief, creatives: [], designQuoteStatus: null })).toBe("AWAITING_QUOTE");
+        expect(designRequestStage({ ...brief, creatives: [], designQuoteStatus: "QUOTED" })).toBe("QUOTED");
+        expect(designRequestStage({ ...brief, creatives: [], designQuoteStatus: "DECLINED" })).toBe("QUOTE_DECLINED");
+        expect(designRequestStage({ ...brief, creatives: [], designQuoteStatus: "ACCEPTED" })).toBe("DESIGNING");
+        /* Once the design exists, its own status tells the story. */
+        expect(designRequestStage({ ...brief, creatives: [creative({ status: "AWAITING_ADVERTISER" })], designQuoteStatus: "ACCEPTED" })).toBe("ARTWORK_READY");
+    });
+});

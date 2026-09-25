@@ -10,6 +10,7 @@ import { ErrorNote, primaryButton, secondaryButton, smallButton } from "@/compon
 import { ChargesTable } from "@/components/booking/charges";
 import { DateRangeDialog } from "@/components/booking/date-range-dialog";
 import { CheckBox } from "@/components/booking/fields";
+import { PrintChoice } from "@/components/booking/print-choice";
 import { SpaceLineCard } from "@/components/booking/space-line";
 import { kindLineOf, useListingCards } from "@/components/booking/summary-rail";
 import { bookingService, estimateCart, flightDays, formatFlight, rupees } from "@/services/booking";
@@ -21,7 +22,8 @@ import { bookingService, estimateCart, flightDays, formatFlight, rupees } from "
  * market, `PUT /campaigns/:id/spots`) and continues to the brief. A visitor
  * goes through sign-in first and comes back here with `?continue=1`, which
  * finishes the job; an account without an advertiser side opens one on the
- * way.
+ * way. PS-1: each print space may carry its own print choice, sent with
+ * the spots when the campaign is made.
  */
 export function CartView() {
     const router = useRouter();
@@ -37,8 +39,9 @@ export function CartView() {
 
     const days = flightDays(dates.from, dates.to);
     const printLines = lines.filter((line) => !kindLineOf(cards[line.listingId], {}).digital);
+    const campaignChoice = printing ? "ADX_PRINTS" : "ADVERTISER_SHIPS";
     const estimate = estimateCart(
-        lines.map((line) => ({ ratePerDay: line.ratePerDay, print: printing && !kindLineOf(cards[line.listingId], {}).digital })),
+        lines.map((line) => ({ ratePerDay: line.ratePerDay, print: (line.fulfilment ?? campaignChoice) === "ADX_PRINTS" && !kindLineOf(cards[line.listingId], {}).digital })),
         days
     );
     const city = lines.map((line) => cards[line.listingId]?.city).find(Boolean) ?? null;
@@ -108,18 +111,20 @@ export function CartView() {
                                     const kind = kindLineOf(cards[line.listingId], {});
                                     const rent = (Number(line.ratePerDay) || 0) * days;
                                     return (
-                                        <SpaceLineCard
-                                            key={line.listingId}
-                                            title={line.title}
-                                            kindLine={kind.line}
-                                            digital={kind.digital}
-                                            datesLine={days > 0 ? `${formatFlight(dates.from, dates.to, { year: false })} · ${days} days · ${rupees(rent)}` : `Dates not set · ${line.ratePerDay ? `${rupees(line.ratePerDay)} / day` : "rate on request"}`}
-                                            action={
-                                                <button type="button" onClick={() => cart.remove(line.listingId)} className="inline-flex h-10 items-center rounded-md border border-line bg-white px-5 text-sm font-medium text-ink hover:border-ink">
-                                                    Remove
-                                                </button>
-                                            }
-                                        />
+                                        <div key={line.listingId}>
+                                            <SpaceLineCard
+                                                title={line.title}
+                                                kindLine={kind.line}
+                                                digital={kind.digital}
+                                                datesLine={days > 0 ? `${formatFlight(dates.from, dates.to, { year: false })} · ${days} days · ${rupees(rent)}` : `Dates not set · ${line.ratePerDay ? `${rupees(line.ratePerDay)} / day` : "rate on request"}`}
+                                                action={
+                                                    <button type="button" onClick={() => cart.remove(line.listingId)} className="inline-flex h-10 items-center rounded-md border border-line bg-white px-5 text-sm font-medium text-ink hover:border-ink">
+                                                        Remove
+                                                    </button>
+                                                }
+                                            />
+                                            {!kind.digital && <PrintChoice className="mt-2 px-1" value={line.fulfilment ?? null} campaignChoice={campaignChoice} onChange={(next) => cart.setLineFulfilment(line.listingId, next)} />}
+                                        </div>
                                     );
                                 })}
                             </div>
@@ -149,7 +154,7 @@ export function CartView() {
                                             <span className="text-sm font-medium text-ink">{printing ? rupees(estimate.installation) : "₹0"}</span>
                                         </div>
                                     </div>
-                                    <p className="mt-3 text-xs text-dim">{printing ? "Estimated from the rent — your publisher confirms the exact charge at review, before you pay." : "You will ship your own print. Untick nothing else: installation is still coordinated by your publisher."}</p>
+                                    <p className="mt-3 text-xs text-dim">{printing ? "Estimated from the rent — your publisher confirms the exact charge at review, before you pay. A space set to its own choice above keeps it." : "You will ship your own prints unless a space above says otherwise. Installation is still coordinated by your publisher."}</p>
                                 </div>
                             )}
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bankTransferOffered, checkoutUrl, configuredGateways, isClaimed, isSettled, pickGateway, pollPayment, type PaymentIntent, type PaymentSummary } from "./payments";
+import { bankTransferOffered, checkoutUrl, configuredGateways, isClaimed, isSettled, lastPayment, pickGateway, pollPayment, UPI_ID_PATTERN, upiCollectOf, type PaymentIntent, type PaymentSummary } from "./payments";
 
 const payment = (overrides: Partial<PaymentSummary> = {}): PaymentSummary => ({
     id: "p1",
@@ -85,5 +85,32 @@ describe("polling", () => {
         const result = await done;
         expect(result.settled).toBe(false);
         expect(result.payment?.status).toBe("CREATED");
+    });
+});
+
+describe("UP-1: the UPI id on the intent", () => {
+    it("takes name@bank and nothing looser", () => {
+        expect(UPI_ID_PATTERN.test("aster.home@okaxis")).toBe(true);
+        expect(UPI_ID_PATTERN.test("9876543210@ybl")).toBe(true);
+        expect(UPI_ID_PATTERN.test("a@b")).toBe(false);
+        expect(UPI_ID_PATTERN.test("name@")).toBe(false);
+        expect(UPI_ID_PATTERN.test("name@1bank")).toBe(false);
+    });
+
+    it("reads Cashfree's collect answer off the checkout, and nothing off an intent without one", () => {
+        expect(upiCollectOf({ checkout: { paymentSessionId: "s", upiCollect: { requested: true, upiId: "a@okaxis", cfPaymentId: "123" } } })).toEqual({ requested: true, upiId: "a@okaxis", cfPaymentId: "123" });
+        expect(upiCollectOf({ checkout: { upiCollect: { requested: false, upiId: "a@okaxis", error: "Invalid VPA" } } })?.requested).toBe(false);
+        expect(upiCollectOf({ checkout: { orderId: "o" } })).toBeNull();
+        expect(upiCollectOf({})).toBeNull();
+    });
+});
+
+describe("RF-1: the payment this browser last opened", () => {
+    it("remembers what it was for, so the return page knows a fee from the whole", () => {
+        lastPayment.remember("c1", { id: "p1", url: null, method: "UPI", purpose: "RESERVATION_FEE" });
+        expect(lastPayment.read("c1")).toEqual({ id: "p1", url: null, method: "UPI", purpose: "RESERVATION_FEE" });
+        lastPayment.remember("c2", { id: "p2", url: "https://pay", method: "CARD" });
+        expect(lastPayment.read("c2")?.purpose).toBeUndefined();
+        expect(lastPayment.read("nope")).toBeNull();
     });
 });

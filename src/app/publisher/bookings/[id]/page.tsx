@@ -400,6 +400,13 @@ function Accepted({ data, reload }: { data: Loaded; reload: () => void }) {
                         </Panel>
                     )}
 
+                    {booking.selfInstallNotes && (
+                        <Panel>
+                            <CardTitle>Your installation notes</CardTitle>
+                            <p className="mt-2 whitespace-pre-line text-sm text-dim">{booking.selfInstallNotes}</p>
+                        </Panel>
+                    )}
+
                     {photos.length > 0 && (
                         <Panel>
                             <div className="flex items-center justify-between">
@@ -520,6 +527,7 @@ function Completed({ data }: { data: Loaded }) {
                     <KeyRow label="Run dates" value={dateRange(booking.startDate, booking.endDate)} strong />
                     <KeyRow label="Fulfilment" value={fulfilment} strong />
                     {booking.adminApprovedAt && <KeyRow label="Signed off" value={longDate(booking.adminApprovedAt)} strong />}
+                    {booking.selfInstallNotes && <KeyRow label="Installation notes" value={<span className="whitespace-pre-line">{booking.selfInstallNotes}</span>} />}
                 </div>
 
                 {insights && (

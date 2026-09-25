@@ -101,9 +101,9 @@ function Draft({ booking, reload }: { booking: BookingDetail; reload: () => void
                 );
             });
             await publisherWorkspace.selfCollectPrints(booking.id, photos.prints!.url);
-            await publisherWorkspace.selfCaptureCondition(booking.id, [photos.before!.url]);
+            await publisherWorkspace.selfCaptureCondition(booking.id, [photos.before!.url], notes);
             await publisherWorkspace.selfCheckIn(booking.id, position);
-            await publisherWorkspace.selfCaptureInstallation(booking.id, photos.after!.url);
+            await publisherWorkspace.selfCaptureInstallation(booking.id, photos.after!.url, notes);
             toast.success("Installation proof submitted");
             reload();
         } catch (caught) {
@@ -128,8 +128,8 @@ function Draft({ booking, reload }: { booking: BookingDetail; reload: () => void
                         ))}
                     </div>
                     <CardTitle className="mt-6">{digital ? "Playback notes" : "Installation notes"}</CardTitle>
-                    <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={600} placeholder="What you did, when, and anything ADX should know — lighting, mounting, timing." className={`${textareaClass} mt-3`} />
-                    <p className="mt-2 text-xs text-dim">Notes are not sent with the photos yet — the proof record has no place for them. Keep anything important for your support request.</p>
+                    <textarea value={notes} onChange={(event) => setNotes(event.target.value.slice(0, 500))} rows={3} maxLength={500} placeholder="What you did, when, and anything ADX should know — lighting, mounting, timing. Optional." className={`${textareaClass} mt-3`} />
+                    <p className="mt-2 text-xs text-dim">Sent with the photos and kept on the booking for ADX and the advertiser · {500 - notes.length} characters left</p>
                     {failure && <ErrorNote message={failure} />}
                 </div>
             </Panel>
@@ -187,7 +187,8 @@ function Filed({ booking, evidence }: { booking: BookingDetail; evidence: Eviden
                         </ul>
                     )}
                     <CardTitle className="mt-6">Installation notes</CardTitle>
-                    <p className="mt-2 text-sm text-dim">{booking.verification?.notes ?? (booking.checkIn ? `Checked in at the site ${longDate(booking.checkIn.checkedInAt, { month: "long" })}${booking.checkIn.distanceM ? `, ${Math.round(booking.checkIn.distanceM)} m from the pin` : ""}.` : "No notes were added.")}</p>
+                    {booking.selfInstallNotes && <p className="mt-2 whitespace-pre-line rounded-md bg-ground px-3 py-2 text-sm text-ink">{booking.selfInstallNotes}</p>}
+                    <p className="mt-2 text-sm text-dim">{booking.verification?.notes ?? (booking.checkIn ? `Checked in at the site ${longDate(booking.checkIn.checkedInAt, { month: "long" })}${booking.checkIn.distanceM ? `, ${Math.round(booking.checkIn.distanceM)} m from the pin` : ""}.` : booking.selfInstallNotes ? "" : "No notes were added.")}</p>
                 </div>
             </Panel>
             <div className="mt-6 flex flex-wrap justify-end gap-3">

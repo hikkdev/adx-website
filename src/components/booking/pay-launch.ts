@@ -1,6 +1,6 @@
 import { apiConfig } from "@/lib/api-config";
 import { bookingService, insertionOrderAccepted, type AdvertiserProfile, type CampaignReview, type Eligibility } from "@/services/booking";
-import { checkoutUrl, lastPayment, paymentsService, type PayMethod, type PaymentGateway, type PaymentIntent } from "@/services/payments";
+import { checkoutUrl, lastPayment, paymentsService, type PayMethod, type PaymentGateway, type PaymentIntent, type PaymentPurpose } from "@/services/payments";
 
 /**
  * What stands between the pay button and the gateway, and the launch itself.
@@ -38,17 +38,21 @@ export interface LaunchedPayment {
     opened: boolean;
 }
 
-/** The intent, then the gateway's page in the reserved window; the payment is remembered for the return page. */
-export async function launchGateway(campaignId: string, gateway: PaymentGateway, method: PayMethod, win: Window | null): Promise<LaunchedPayment> {
+/**
+ * The intent, then the gateway's page in the reserved window; the payment is
+ * remembered for the return page. RF-1: `purpose: 'RESERVATION_FEE'` pays
+ * the fee instead of the total. UP-1: `upiId` rides on the intent.
+ */
+export async function launchGateway(campaignId: string, gateway: PaymentGateway, method: PayMethod, win: Window | null, options: { purpose?: PaymentPurpose; upiId?: string } = {}): Promise<LaunchedPayment> {
     let intent: PaymentIntent;
     try {
-        intent = await paymentsService.createIntent({ campaignId, gateway });
+        intent = await paymentsService.createIntent({ campaignId, gateway, ...(options.purpose ? { purpose: options.purpose } : {}), ...(options.upiId ? { upiId: options.upiId } : {}) });
     } catch (caught) {
         win?.close();
         throw caught;
     }
     const url = checkoutUrl(intent, apiConfig.baseUrl);
-    lastPayment.remember(campaignId, { id: intent.payment.id, url, method });
+    lastPayment.remember(campaignId, { id: intent.payment.id, url, method, ...(options.purpose ? { purpose: options.purpose } : {}) });
     let opened = false;
     if (url && win && !win.closed) {
         try {
@@ -63,4 +67,5 @@ export async function launchGateway(campaignId: string, gateway: PaymentGateway,
     return { intent, url, opened };
 }
 
-export const returnHref = (campaignId: string, paymentId: string) => `/advertiser/campaigns/${encodeURIComponent(campaignId)}/pay/return?payment=${encodeURIComponent(paymentId)}`;
+export const returnHref = (campaignId: string, paymentId: string, purpose?: PaymentPurpose) =>
+    `/advertiser/campaigns/${encodeURIComponent(campaignId)}/pay/return?payment=${encodeURIComponent(paymentId)}${purpose === "RESERVATION_FEE" ? "&purpose=RESERVATION_FEE" : ""}`;

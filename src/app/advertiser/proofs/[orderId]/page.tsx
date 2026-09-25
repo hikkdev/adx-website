@@ -16,6 +16,7 @@ import {
     deliveryActivity,
     fileNameOf,
     longDate,
+    orderRef,
     PHOTO_KIND_LABEL,
     proofStatus,
     shortDate,
@@ -76,6 +77,7 @@ function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evid
     const activity = deliveryActivity(order, photos);
     const campaignName = order.campaignName ?? "Campaign";
     const subtitle = [
+        orderRef(order),
         `${categoryLabel(order.listing.category)} campaign`,
         order.listing.city,
         status.key === "VERIFIED" ? `Completed ${longDate(order.endDate ?? verifiedAt)}` : status.label,
@@ -170,7 +172,9 @@ function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evid
                         </div>
                         <div className="px-4 py-4">
                             <h3 className="text-base font-semibold text-ink">Publisher delivery note</h3>
-                            <p className="mt-3 text-sm leading-relaxed text-dim">{order.notes?.trim() || `No note from ${publisher} on this booking yet.`}</p>
+                            {/* SI-N: what the publisher wrote beside their own installation photos, then the booking's note. */}
+                            {order.selfInstallNotes?.trim() && <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-ink">{order.selfInstallNotes.trim()}</p>}
+                            <p className={`${order.selfInstallNotes?.trim() ? "mt-2" : "mt-3"} text-sm leading-relaxed text-dim`}>{order.notes?.trim() || (order.selfInstallNotes?.trim() ? "" : `No note from ${publisher} on this booking yet.`)}</p>
                         </div>
                     </section>
 

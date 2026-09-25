@@ -10,6 +10,7 @@ import { messageOf } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { artworkSpec, audienceLabel, briefOf, CREATIVE_STATUS_META, creativesService, deliverablesLine, designedCreative, designRequestStage, spaceNames, STAGE_META } from "@/services/creatives";
 import { planPrefs } from "@/services/planner";
+import { rupees } from "@/services/booking";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
     return (
@@ -42,9 +43,12 @@ const TONE: Record<string, string> = {
  * draws the "Awaiting quote" state; the same page carries the rest of the
  * story off the campaign — the design ADX made, awaiting your approval
  * (accept, or send back with a note), sent back, accepted, approved or
- * refused — because the request is the campaign's own record.
+ * refused — because the request is the campaign's own record. DQ-1: the
+ * desk's quote sits at the top while it awaits an answer — Accept starts
+ * the design and puts "Design by ADX" on the charges; Decline leaves the
+ * campaign to the advertiser's own artwork.
  */
-export function RequestStatus({ campaign, reload }: CreativeProps) {
+export function RequestStatus({ campaign, replace, reload }: CreativeProps) {
     const spots = campaign.spots.filter((spot) => spot.status !== "CANCELLED");
     const cards = useSpotCards(spots);
     const brief = briefOf(campaign);
@@ -54,8 +58,24 @@ export function RequestStatus({ campaign, reload }: CreativeProps) {
     const notes = planPrefs.read(campaign.id).designNotes;
     const [asking, setAsking] = React.useState(false);
     const [note, setNote] = React.useState("");
-    const [busy, setBusy] = React.useState<"accept" | "changes" | null>(null);
+    const [busy, setBusy] = React.useState<"accept" | "changes" | "quote-accept" | "quote-decline" | null>(null);
     const [error, setError] = React.useState<string | null>(null);
+    const quote = campaign.designQuoteStatus ? { amount: campaign.designQuoteAmount ?? null, status: campaign.designQuoteStatus, note: campaign.designQuoteNote ?? null, quotedAt: campaign.designQuotedAt ?? null, respondedAt: campaign.designQuoteRespondedAt ?? null } : null;
+
+    const answerQuote = async (decision: "ACCEPTED" | "DECLINED") => {
+        if (busy) return;
+        setBusy(decision === "ACCEPTED" ? "quote-accept" : "quote-decline");
+        setError(null);
+        try {
+            const updated = await creativesService.respondToQuote(campaign.id, decision);
+            replace(updated);
+            reload();
+        } catch (caught) {
+            setError(messageOf(caught, "Could not record your answer to the quote."));
+        } finally {
+            setBusy(null);
+        }
+    };
 
     const run = async (action: "accept" | "changes") => {
         if (!design || busy) return;
@@ -84,9 +104,32 @@ export function RequestStatus({ campaign, reload }: CreativeProps) {
                     <Row label="Campaign" value={campaign.name} />
                     <Row label="Selected spaces" value={spots.length ? spaceNames(spots) : "None yet"} />
                     <Row label="Request status" value={meta.status} />
-                    <Row label="Design payment" value="Not requested" />
+                    <Row label="Design payment" value={quote?.status === "ACCEPTED" ? `${rupees(quote.amount)} · on the campaign's charges` : quote?.status === "QUOTED" ? `${rupees(quote.amount)} quoted` : quote?.status === "DECLINED" ? "Quote declined" : "Not requested"} />
                 </div>
             </Card>
+
+            {quote?.status === "QUOTED" && (
+                <Card title="ADX's quote for the design work">
+                    <p className="text-3xl font-semibold tracking-tight text-ink">{rupees(quote.amount)}</p>
+                    <p className="text-xs text-dim">Plus GST · {quote.quotedAt ? `quoted ${new Date(quote.quotedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}` : "quoted by the ADX desk"}</p>
+                    {quote.note && (
+                        <p className="rounded-md bg-ground px-4 py-3 text-sm text-ink">
+                            <span className="text-dim">From ADX · </span>
+                            {quote.note}
+                        </p>
+                    )}
+                    <p className="text-sm text-dim">Accept and the design starts; the fee is added to your campaign&apos;s charges as &ldquo;Design by ADX&rdquo; and paid with the booking. Decline and the campaign stays as it is — you supply the artwork yourself.</p>
+                    {error && <InlineError message={error} />}
+                    <div className="flex flex-wrap gap-3">
+                        <button type="button" onClick={() => void answerQuote("ACCEPTED")} disabled={busy !== null} className="inline-flex h-12 items-center rounded-md bg-brand px-6 text-sm font-medium text-white hover:bg-[#a51b1b] disabled:opacity-60">
+                            {busy === "quote-accept" ? "Accepting…" : `Accept the ${rupees(quote.amount)} quote`}
+                        </button>
+                        <button type="button" onClick={() => void answerQuote("DECLINED")} disabled={busy !== null} className="inline-flex h-12 items-center rounded-md border border-line bg-white px-6 text-sm font-medium text-ink hover:border-ink disabled:opacity-60">
+                            {busy === "quote-decline" ? "Declining…" : "Decline"}
+                        </button>
+                    </div>
+                </Card>
+            )}
 
             {design && (
                 <Card title={stage === "ARTWORK_READY" ? "Approve the design ADX made" : "The design ADX made"}>
@@ -162,6 +205,19 @@ export function RequestStatus({ campaign, reload }: CreativeProps) {
                     <>
                         <p className="text-sm text-dim">The artwork is approved. Return to the campaign to complete the booking and pay.</p>
                         <p className="text-sm text-dim">Printing starts after payment; installation proofs land under Delivery proofs.</p>
+                    </>
+                ) : stage === "QUOTED" ? (
+                    <>
+                        <p className="text-sm text-dim">Answer the quote above. Nothing is designed, and nothing is charged, until you accept it.</p>
+                        <p className="text-sm text-dim">The design fee is paid with the campaign, not separately.</p>
+                    </>
+                ) : stage === "QUOTE_DECLINED" ? (
+                    <>
+                        <p className="text-sm text-dim">Your media campaign remains a draft. Upload your own artwork from the campaign, or contact support for a fresh quote.</p>
+                    </>
+                ) : stage === "DESIGNING" ? (
+                    <>
+                        <p className="text-sm text-dim">ADX is designing from your brief. The design appears here for your approval; nothing prints until you approve it.</p>
                     </>
                 ) : (
                     <>

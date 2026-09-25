@@ -52,6 +52,10 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
 
     const gateway = gateways ? pickGateway(gateways) : null;
     const charges = review ? chargesOf(review) : estimateCart(campaign.spots.map((spot) => ({ ratePerDay: spot.ratePerDay, print: campaign.fulfilment !== "ADVERTISER_SHIPS" })), flightDays(campaign.startDate, campaign.endDate));
+    /* RF-1: a paid reservation fee already comes off the intent's amount on the server. */
+    const reservation = campaign.reservation ?? null;
+    const feePaid = reservation?.status === "PAID";
+    const payable = feePaid && reservation?.payable ? Number(reservation.payable) : charges.total;
 
     const authorise = async () => {
         if (busy || !gateway) return;
@@ -85,9 +89,10 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
                     <TextField label="Name on card" defaultValue={advertiser?.name ?? accountNameOf(advertiser)} disabled />
                 </div>
                 <div className="mt-6 flex items-center justify-between rounded-md bg-ground px-4 py-5">
-                    <span className="text-base font-medium text-ink">Total including GST</span>
-                    <span className="text-2xl font-semibold text-ink">{rupees(charges.total)}</span>
+                    <span className="text-base font-medium text-ink">{feePaid ? "Balance including GST" : "Total including GST"}</span>
+                    <span className="text-2xl font-semibold text-ink">{rupees(payable)}</span>
                 </div>
+                {feePaid && reservation && <p className="mt-2 text-xs text-dim">The campaign total is {rupees(charges.total)}; the {rupees(reservation.fee)} reservation fee you paid comes off it.</p>}
                 <p className="mt-4 text-sm text-dim">Your bank may ask you to approve this payment. If you cancel, your campaign draft will stay saved.</p>
                 {gateways && !gateway && <p className="mt-3 text-sm text-brand">No card gateway is set up yet — ask ADX, or pay by bank transfer from the previous page.</p>}
                 {gateway?.testMode && <p className="mt-3 text-xs text-dim">{GATEWAY_LABEL[gateway.gateway]} is in test mode: no real money moves.</p>}

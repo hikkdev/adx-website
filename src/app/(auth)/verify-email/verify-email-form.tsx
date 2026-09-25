@@ -6,15 +6,15 @@ import { AtSign } from "lucide-react";
 import { AuthCard, AuthTitle, primaryButton } from "@/components/auth/auth-card";
 import { useAuth } from "@/lib/auth";
 import { messageOf } from "@/lib/api-client";
-import { authService, destinationFor, looksLikeEmail, maskEmail, normaliseEmail, otpFailure } from "@/services/auth";
-import { CODE_LENGTH, CodeBoxes, emptyCode } from "../verify/verify-form";
+import { EMAIL_CODE_LENGTH, authService, destinationFor, looksLikeEmail, maskEmail, normaliseEmail, otpFailure } from "@/services/auth";
+import { CodeBoxes, emptyCode } from "../verify/verify-form";
 
 /**
  * ED-1: an account that came in by its number proves its email here — the
  * step `destinationFor` sends every signed-in account to while
  * `emailVerifiedAt` is null. The address on file (if any) is offered; the
  * code goes to `POST /users/me/email/send-code` and back to `/verify`, and
- * the answer makes it the account's verified email.
+ * the answer makes it the account's verified email. EC-8: eight letters.
  */
 export function VerifyEmailForm() {
     const router = useRouter();
@@ -23,7 +23,7 @@ export function VerifyEmailForm() {
     const { status, user, refresh } = useAuth();
     const [email, setEmail] = React.useState("");
     const [sent, setSent] = React.useState<{ email: string; wait: number } | null>(null);
-    const [code, setCode] = React.useState<string[]>(() => emptyCode());
+    const [code, setCode] = React.useState<string[]>(() => emptyCode("", EMAIL_CODE_LENGTH));
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const address = email || user?.email || "";
@@ -48,7 +48,7 @@ export function VerifyEmailForm() {
         try {
             const result = await authService.sendMyEmailCode(normaliseEmail(address));
             setSent({ email: result.email, wait: result.resendAfterSeconds });
-            setCode(emptyCode(result.devOtp ?? ""));
+            setCode(emptyCode(result.devOtp ?? "", EMAIL_CODE_LENGTH));
         } catch (caught) {
             const failure = otpFailure(caught);
             setError(failure ? failure.message : messageOf(caught, "Could not send the code. Try again."));
@@ -59,7 +59,7 @@ export function VerifyEmailForm() {
 
     const value = code.join("");
     const verify = async () => {
-        if (!sent || value.length < CODE_LENGTH || busy) return;
+        if (!sent || value.length < EMAIL_CODE_LENGTH || busy) return;
         setBusy(true);
         setError(null);
         try {
@@ -69,7 +69,7 @@ export function VerifyEmailForm() {
         } catch (caught) {
             const failure = otpFailure(caught);
             setError(failure ? failure.message : messageOf(caught, "That code did not work."));
-            setCode(emptyCode());
+            setCode(emptyCode("", EMAIL_CODE_LENGTH));
         } finally {
             setBusy(false);
         }
@@ -86,7 +86,7 @@ export function VerifyEmailForm() {
     if (sent) {
         return (
             <AuthCard>
-                <AuthTitle title="Check your email" subtitle={<>Enter the {CODE_LENGTH}-digit code sent to {maskEmail(sent.email)}.</>} />
+                <AuthTitle title="Check your email" subtitle={<>Enter the {EMAIL_CODE_LENGTH}-letter code sent to {maskEmail(sent.email)}.</>} />
                 <form
                     onSubmit={(event) => {
                         event.preventDefault();
@@ -94,7 +94,7 @@ export function VerifyEmailForm() {
                     }}
                     className="mt-8"
                 >
-                    <CodeBoxes code={code} onChange={setCode} onSubmit={() => void verify()} />
+                    <CodeBoxes code={code} onChange={setCode} onSubmit={() => void verify()} channel="email" />
                     <div className="mt-3 flex items-center justify-between text-sm">
                         <button type="button" onClick={() => setSent(null)} className="text-dim hover:text-ink">
                             Change email
@@ -104,11 +104,11 @@ export function VerifyEmailForm() {
                         </button>
                     </div>
                     {error && <p className="mt-2 text-sm text-danger" role="alert">{error}</p>}
-                    <button type="submit" disabled={value.length < CODE_LENGTH || busy} className={`${primaryButton} mt-6`}>
+                    <button type="submit" disabled={value.length < EMAIL_CODE_LENGTH || busy} className={`${primaryButton} mt-6`}>
                         {busy ? "Checking…" : "Verify & continue"}
                     </button>
                 </form>
-                <p className="mt-6 text-sm text-dim">Use the code from your latest ADX email.</p>
+                <p className="mt-6 text-sm text-dim">Use the code from your latest ADX email — eight letters, in any case.</p>
             </AuthCard>
         );
     }

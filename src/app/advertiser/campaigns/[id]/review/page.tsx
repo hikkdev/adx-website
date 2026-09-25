@@ -17,6 +17,7 @@ import {
     chargesOf,
     creativeFor,
     formatDay,
+    fulfilmentOfLine,
     isDigital,
     prettySize,
     rupees,
@@ -119,7 +120,18 @@ function Review({ ready }: { ready: ReadyCampaign }) {
                         </Section>
                         <Section title="Artwork and publisher review" edit={stepHref(campaign.id, campaign.creativePath === "ADX_DESIGN_AGENCY" ? "artwork" : "artwork/files")}>
                             <ul className="space-y-1.5 text-sm text-ink">
-                                {campaign.creativePath === "ADX_DESIGN_AGENCY" && <li>ADX designs the artwork · separate quote before design work begins</li>}
+                                {campaign.creativePath === "ADX_DESIGN_AGENCY" && (
+                                    <li>
+                                        ADX designs the artwork ·{" "}
+                                        {campaign.designQuoteStatus === "ACCEPTED" && review?.designFee
+                                            ? `quote of ${rupees(review.designFee.amount)} accepted · on the charges as "Design by ADX"`
+                                            : campaign.designQuoteStatus === "QUOTED"
+                                              ? `quote of ${rupees(campaign.designQuoteAmount)} awaiting your answer`
+                                              : campaign.designQuoteStatus === "DECLINED"
+                                                ? "quote declined"
+                                                : "separate quote before design work begins"}
+                                    </li>
+                                )}
                                 {campaign.creativePath !== "ADX_DESIGN_AGENCY" &&
                                     campaign.spots.map((spot) => {
                                         const creative = creativeFor(campaign.creatives, spot.id);
@@ -137,9 +149,11 @@ function Review({ ready }: { ready: ReadyCampaign }) {
                             <ul className="space-y-1.5 text-sm text-ink">
                                 {campaign.spots.map((spot) => {
                                     const print = printSpots.includes(spot);
+                                    /* PS-1: the line's own print choice, else the campaign's. */
+                                    const fulfilment = fulfilmentOfLine(review?.lines.find((l) => l.spotId === spot.id) ?? spot, campaign);
                                     return (
                                         <li key={spot.id}>
-                                            {spot.listing.title} · {print ? (campaign.fulfilment === "ADVERTISER_SHIPS" ? "You ship the print; the publisher installs it" : campaign.fulfilment ? `Publisher prints and installs it` : <span className="text-brand">Print choice not made</span>) : "Approved digital playback included"}
+                                            {spot.listing.title} · {print ? (fulfilment === "ADVERTISER_SHIPS" ? "You ship the print; the publisher installs it · no printing fee" : fulfilment ? `ADX prints and the publisher installs it` : <span className="text-brand">Print choice not made</span>) : "Approved digital playback included"}
                                         </li>
                                     );
                                 })}

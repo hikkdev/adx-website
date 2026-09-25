@@ -25,6 +25,8 @@ import {
     multiplyMoney,
     pendingClearsBy,
     rateForDays,
+    NOTIFICATION_SWITCHES,
+    sessionPlace,
     shiftAnchor,
     spanOf,
     sumMoney,
@@ -219,5 +221,21 @@ describe("account", () => {
         expect(describeSession("Mozilla/5.0 (Windows NT 10.0) Chrome/129")).toEqual({ name: "Chrome", platform: "Windows", kind: "desktop" });
         expect(describeSession("okhttp/4.9 ADX-user")).toMatchObject({ name: "ADX app", kind: "phone" });
         expect(kycLabel("NEEDS_INFO").label).toBe("More information needed");
+    });
+});
+
+describe("BK-1, SL-1 and WS-1 on the publisher side", () => {
+    it("quotes the booking's display id before the tail of its internal id", () => {
+        expect(bookingRef(booking({ displayId: "BKG-2509-2601" }))).toBe("BKG-2509-2601");
+        expect(bookingRef(booking({ displayId: null }))).toBe("BKG-4JO8CF");
+        expect(bookingRef(booking())).toBe("BKG-4JO8CF");
+    });
+
+    it("names where a session was seen, and switches the weekly summary through its own kind", () => {
+        expect(sessionPlace({ city: "Bengaluru", region: "Karnataka", country: "India" })).toBe("Bengaluru, India");
+        expect(sessionPlace({ city: null, region: null, country: "India" })).toBe("India");
+        expect(sessionPlace({})).toBeNull();
+        expect(NOTIFICATION_SWITCHES.find((row) => row.key === "weekly")?.type).toBe("WEEKLY_SUMMARY");
+        expect(NOTIFICATION_SWITCHES.every((row) => row.type !== null)).toBe(true);
     });
 });

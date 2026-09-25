@@ -7,29 +7,33 @@ import { toast } from "sonner";
 import { Panel } from "@/components/workspace/page-heading";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { AuthenticatorSetup } from "@/components/auth/authenticator-setup";
 import { brandButton, CardTitle, Chip, ErrorNote, Field, inputClass, Loading, outlineButton } from "@/components/publisher/parts";
 import { useLoad } from "@/components/publisher/use-load";
 import { useAuth } from "@/lib/auth";
 import { messageOf } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { usePublisher } from "../layout";
-import { describeSession, kycLabel, maskedPhone, NOTIFICATION_SWITCHES, publisherWorkspace, relativeTime, type AccountMe, type DeviceSession, type NotificationPreference, type PublisherProfile } from "@/services/publisher-workspace";
+import { twoFactorService, type TwoFactorStatus } from "@/services/auth";
+import { describeSession, kycLabel, maskedPhone, NOTIFICATION_SWITCHES, publisherWorkspace, relativeTime, sessionPlace, type AccountMe, type DeviceSession, type NotificationPreference, type PublisherProfile } from "@/services/publisher-workspace";
 
 interface Loaded {
     profile: PublisherProfile;
     me: AccountMe;
     sessions: DeviceSession[];
     preferences: NotificationPreference[];
+    twoFactor: TwoFactorStatus | null;
 }
 
 async function readProfile(): Promise<Loaded> {
-    const [profile, me, sessions, preferences] = await Promise.all([
+    const [profile, me, sessions, preferences, twoFactor] = await Promise.all([
         publisherWorkspace.profile(),
         publisherWorkspace.me(),
         publisherWorkspace.sessions().catch(() => [] as DeviceSession[]),
         publisherWorkspace.notificationPreferences().catch(() => [] as NotificationPreference[]),
+        twoFactorService.status().catch(() => null as TwoFactorStatus | null),
     ]);
-    return { profile, me, sessions, preferences };
+    return { profile, me, sessions, preferences, twoFactor };
 }
 
 /**
@@ -85,28 +89,24 @@ export default function ProfilePage() {
 
                     <Panel className="p-0">
                         <div className="border-b border-line px-6 py-4">
-                            <CardTitle>Two-factor authentication</CardTitle>
+                            <CardTitle>Security</CardTitle>
                             <p className="mt-1 text-sm text-dim">Protect your publisher account at sign-in</p>
                         </div>
                         <div className="px-6 py-4">
                             <div className="flex items-start justify-between gap-4">
                                 <div className="flex items-start gap-3">
-                                    <span className="flex size-9 items-center justify-center rounded-md bg-success-soft text-success">
+                                    <span className="flex size-8 items-center justify-center rounded-md bg-success-soft text-success">
                                         <ShieldCheck className="size-4" aria-hidden />
                                     </span>
                                     <div>
-                                        <p className="text-sm font-semibold text-ink">One-time code to your phone</p>
-                                        <p className="text-xs text-dim">Every sign-in asks for the code sent to {maskedPhone(data.me.mobile)}</p>
+                                        <p className="text-sm font-medium text-ink">One-time code to your phone or email</p>
+                                        <p className="text-xs text-dim">Every sign-in asks for a code — to {maskedPhone(data.me.mobile)} or your email</p>
                                     </div>
                                 </div>
                                 <Chip tone="success">On</Chip>
                             </div>
-                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-                                <p className="text-xs text-dim">An authenticator app is not available for publisher accounts yet.</p>
-                                <button type="button" disabled className={cn(outlineButton, "h-9 px-4")}>
-                                    Set up authenticator app
-                                </button>
-                            </div>
+                            {/* 2FA-A: the authenticator app, the same body the advertiser's account page draws. */}
+                            <AuthenticatorSetup status={data.twoFactor} onChanged={reload} sideLabel="publisher account" className="mt-4 border-t border-line pt-4" />
                         </div>
                     </Panel>
 
@@ -221,7 +221,7 @@ function SessionsCard({ sessions, onChanged }: { sessions: DeviceSession[]; onCh
                                     {session.current && <span className="ml-2 text-[11px] font-medium text-success">This device</span>}
                                 </p>
                                 <p className="truncate text-xs text-dim">
-                                    {session.ipAddress ?? "Unknown network"} · {relativeTime(session.lastUsedAt ?? session.createdAt)}
+                                    {[session.ipAddress ?? "Unknown network", sessionPlace(session), relativeTime(session.lastUsedAt ?? session.createdAt)].filter(Boolean).join(" · ")}
                                 </p>
                             </div>
                             {!session.current && (

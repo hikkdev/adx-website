@@ -27,11 +27,14 @@ import {
     requestsSummary,
     requestTags,
     rupees,
+    orderRef,
+    sessionPlace,
     spacesLine,
     ticketCampaignId,
     ticketStatusLabel,
     ticketTopic,
     type CampaignCreative,
+    type InvoiceDetailLine,
     type NotificationPreference,
 } from "./advertiser-workspace";
 
@@ -225,5 +228,46 @@ describe("account", () => {
             { type: "MESSAGE", channel: "IN_APP", enabled: true },
         ]);
         expect(groupRows(prefs, PREFERENCE_GROUPS[3]!, true)).toEqual([]);
+    });
+});
+
+describe("SL-1, BK-1, WS-1 and GST-D on the workspace", () => {
+    it("names where a session was seen, when the lookup found anything", () => {
+        expect(sessionPlace({ city: "Bengaluru", region: "Karnataka", country: "India" })).toBe("Bengaluru, India");
+        expect(sessionPlace({ city: null, region: "Karnataka", country: "India" })).toBe("Karnataka, India");
+        expect(sessionPlace({ city: "Pune", region: null, country: null })).toBe("Pune");
+        expect(sessionPlace({ city: null, region: null, country: null })).toBeNull();
+        expect(sessionPlace({})).toBeNull();
+    });
+
+    it("quotes the booking's display id, and the tail of the internal id on an older row", () => {
+        expect(orderRef({ id: "cmu5tney600124kvvo64jo8cf", displayId: "BKG-2509-2601" })).toBe("BKG-2509-2601");
+        expect(orderRef({ id: "cmu5tney600124kvvo64jo8cf", displayId: null })).toBe("BKG-4JO8CF");
+        expect(orderRef({ id: "cmu5tney600124kvvo64jo8cf" })).toBe("BKG-4JO8CF");
+    });
+
+    it("switches the weekly summary through its own notification kind", () => {
+        const weekly = PREFERENCE_GROUPS.find((g) => g.id === "weekly")!;
+        expect(weekly.types).toEqual(["WEEKLY_SUMMARY"]);
+        const preferences: NotificationPreference[] = [
+            { type: "WEEKLY_SUMMARY", channel: "EMAIL", enabled: true, mandatory: false },
+            { type: "WEEKLY_SUMMARY", channel: "IN_APP", enabled: false, mandatory: false },
+        ];
+        expect(groupEnabled(preferences, weekly)).toBe(true);
+        expect(groupRows(preferences, weekly, false)).toEqual([
+            { type: "WEEKLY_SUMMARY", channel: "EMAIL", enabled: false },
+            { type: "WEEKLY_SUMMARY", channel: "IN_APP", enabled: false },
+        ]);
+    });
+
+    it("says on the invoice that the discount took its GST with it", () => {
+        const lines: InvoiceDetailLine[] = [
+            { id: "1", kind: "MEDIA", description: "Whitefield billboard", sacCode: null, quantity: "1.00", unitRate: "6000.00", taxableValue: "6000.00", gstPct: "0.18", gstAmount: "1080.00", campaignSpotId: "s1", sortOrder: 1 },
+            { id: "2", kind: "DISCOUNT", description: "Promo LAUNCH10", sacCode: null, quantity: "1.00", unitRate: "-600.00", taxableValue: "-600.00", gstPct: "0.18", gstAmount: "-108.00", campaignSpotId: null, sortOrder: 2 },
+        ];
+        const rows = detailLines(lines, { startDate: "2026-10-12", endDate: "2026-10-25" });
+        expect(rows[1]!.description).toBe("Promo LAUNCH10 (incl. GST −₹108)");
+        expect(rows[1]!.total).toBe(-708);
+        expect(rows[0]!.description).toBe("Whitefield billboard");
     });
 });

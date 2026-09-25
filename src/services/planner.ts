@@ -142,7 +142,15 @@ export interface Campaign {
     codes: TrackingCodeView[];
     city?: string | null;
     spotCount?: number;
+    /** DQ-1: the desk's design quote on an ADX-design campaign. */
+    designQuoteAmount?: string | null;
+    designQuoteStatus?: DesignQuoteStatus | null;
+    designQuoteNote?: string | null;
+    designQuotedAt?: string | null;
+    designQuoteRespondedAt?: string | null;
 }
+
+export type DesignQuoteStatus = "QUOTED" | "ACCEPTED" | "DECLINED";
 
 /** Everything a planner screen may send back — the backend's patch schema, key for key. */
 export type CampaignPatch = Partial<{

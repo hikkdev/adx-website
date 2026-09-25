@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { rupees, type Charges } from "@/services/booking";
+import { discountLabel, rupees, type Charges } from "@/services/booking";
 
 /**
  * The grey totals block (5204:62238's "Campaign total", the rails on the
@@ -10,7 +10,8 @@ import { rupees, type Charges } from "@/services/booking";
  * GST (18%) over a rule, then "Total including GST".
  */
 export function ChargesTable({ charges, promo, note, className, title }: { charges: Charges; promo?: { code: string; amount: string } | null; note?: React.ReactNode; className?: string; title?: string }) {
-    const taxable = charges.mediaRent + charges.production + charges.platformFee + charges.otherFees.reduce((sum, fee) => sum + fee.amount, 0);
+    /* GST-D: the GST shown is net of what the discount took off, so the rate is read against the discounted value. */
+    const taxable = charges.mediaRent + charges.production + charges.platformFee + charges.otherFees.reduce((sum, fee) => sum + fee.amount, 0) - charges.discount;
     const gstPct = taxable > 0 ? Math.round((charges.gst / taxable) * 100) : 18;
     return (
         <div className={cn("rounded-lg bg-ground p-3", className)}>
@@ -23,8 +24,8 @@ export function ChargesTable({ charges, promo, note, className, title }: { charg
                     <Row key={fee.label} label={fee.label} value={rupees(fee.amount)} />
                 ))}
                 <Row label={`GST (${gstPct || 18}%)`} value={rupees(charges.gst)} />
-                {promo && <Row label={`Promo · ${promo.code}`} value={`− ${rupees(promo.amount)}`} tone="brand" />}
-                {!promo && charges.discount > 0 && <Row label="Discount" value={`− ${rupees(charges.discount)}`} tone="brand" />}
+                {promo && <Row label={`Promo · ${promo.code}`} value={discountLabel({ discount: Number(promo.amount) || charges.discount, discountGst: charges.discountGst })} tone="brand" />}
+                {!promo && charges.discount > 0 && <Row label="Discount" value={discountLabel(charges)} tone="brand" />}
             </dl>
             <div className="mt-3 flex items-center justify-between border-t border-line px-1 pt-3">
                 <span className="text-sm font-medium text-ink">Total including GST</span>
@@ -67,7 +68,13 @@ export function ItemisedCharges({ charges, days, className, promo }: { charges: 
                 {promo && (
                     <div className="flex justify-between gap-4">
                         <dt className="text-dim">Promo · {promo.code}</dt>
-                        <dd className="font-medium text-brand">− {rupees(promo.amount)}</dd>
+                        <dd className="font-medium text-brand">{discountLabel({ discount: Number(promo.amount) || charges.discount, discountGst: charges.discountGst })}</dd>
+                    </div>
+                )}
+                {!promo && charges.discount > 0 && (
+                    <div className="flex justify-between gap-4">
+                        <dt className="text-dim">Discount</dt>
+                        <dd className="font-medium text-brand">{discountLabel(charges)}</dd>
                     </div>
                 )}
             </dl>

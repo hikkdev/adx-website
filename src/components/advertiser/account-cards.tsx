@@ -1,21 +1,23 @@
 "use client";
 
 import * as React from "react";
-import { Laptop, ShieldCheck, Smartphone } from "lucide-react";
+import { Laptop, Smartphone } from "lucide-react";
 import { messageOf } from "@/lib/api-client";
 import { Switch } from "@/components/ui/switch";
+import { AuthenticatorSetup } from "@/components/auth/authenticator-setup";
 import { btnSmall, HeaderCard, inputClass, StatusChip } from "@/components/advertiser/bits";
+import { EMAIL_CODE_LENGTH, normaliseCode } from "@/services/auth";
 import {
     advertiserWorkspace,
     describeSession,
     groupEnabled,
     groupRows,
     kycLabel,
-    longDate,
     maskPhone,
     orderSessions,
     PREFERENCE_GROUPS,
     relativeTime,
+    sessionPlace,
     type AdvertiserKyc,
     type AdvertiserProfile,
     type DeviceSession,
@@ -66,7 +68,7 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
             const answer = await advertiserWorkspace.sendEmailCode(email.trim());
             setSent({ email: answer.email ?? email.trim(), devOtp: answer.devOtp, resendAfterSeconds: answer.resendAfterSeconds });
             setCode(answer.devOtp ?? "");
-            setNote({ tone: "ok", text: `We sent a 6-digit code to ${answer.email ?? email.trim()}.` });
+            setNote({ tone: "ok", text: `We sent an ${EMAIL_CODE_LENGTH}-letter code to ${answer.email ?? email.trim()}.` });
         } catch (caught) {
             setNote({ tone: "bad", text: messageOf(caught, "Could not send the code.") });
         } finally {
@@ -115,8 +117,8 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
                     </div>
                     {sent && (
                         <div className="mt-2 flex gap-2">
-                            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="6-digit code" className={inputClass} aria-label="Verification code" />
-                            <button type="button" onClick={() => void verify()} className={`${btnSmall} whitespace-nowrap`} disabled={busy !== null || code.length !== 6}>
+                            <input value={code} onChange={(e) => setCode(normaliseCode(e.target.value, "email").slice(0, EMAIL_CODE_LENGTH))} inputMode="text" autoCapitalize="characters" autoCorrect="off" spellCheck={false} placeholder={`${EMAIL_CODE_LENGTH}-letter code`} className={`${inputClass} uppercase tracking-widest`} aria-label="Verification code" />
+                            <button type="button" onClick={() => void verify()} className={`${btnSmall} whitespace-nowrap`} disabled={busy !== null || code.length !== EMAIL_CODE_LENGTH}>
                                 {busy === "verify" ? "Checking…" : "Confirm"}
                             </button>
                         </div>
@@ -148,6 +150,9 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
         billingAddress: advertiser.billingAddress ?? "",
         city: advertiser.city ?? "",
         state: advertiser.state ?? "",
+        /* AD-1: the PIN and the country, their own fields on the row. */
+        postalCode: advertiser.postalCode ?? "",
+        country: advertiser.country ?? "",
     });
     const [busy, setBusy] = React.useState(false);
     const [note, setNote] = React.useState<{ tone: "ok" | "bad"; text: string } | null>(null);
@@ -156,14 +161,24 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
 
     const changed = (Object.keys(form) as (keyof typeof form)[]).some((key) => form[key].trim() !== ((advertiser[key] as string | null) ?? ""));
 
+    const pinInvalid = !!form.postalCode.trim() && !/^\d{6}$/.test(form.postalCode.trim());
+
     const save = async () => {
+        if (pinInvalid) {
+            setNote({ tone: "bad", text: "A PIN code has six digits." });
+            return;
+        }
         setBusy(true);
         setNote(null);
         try {
-            const patch: Record<string, string> = {};
+            const patch: Record<string, string | null> = {};
             for (const key of Object.keys(form) as (keyof typeof form)[]) {
                 const value = form[key].trim();
-                if (value && value !== ((advertiser[key] as string | null) ?? "")) patch[key] = key === "gstin" ? value.toUpperCase() : value;
+                const before = (advertiser[key] as string | null | undefined) ?? "";
+                if (value === before) continue;
+                /* AD-1: the PIN and the country may be cleared; the rest is only ever replaced. */
+                if (!value && (key === "postalCode" || key === "country")) patch[key] = null;
+                else if (value) patch[key] = key === "gstin" ? value.toUpperCase() : value;
             }
             if (Object.keys(patch).length) await advertiserWorkspace.updateAdvertiser(advertiser.id, patch);
             setNote({ tone: "ok", text: "Billing details saved. New invoices use them." });
@@ -196,6 +211,12 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
                 </Field>
                 <Field label="State">
                     <input value={form.state} onChange={set("state")} className={inputClass} maxLength={80} />
+                </Field>
+                <Field label="PIN code (6 digits)">
+                    <input value={form.postalCode} onChange={(e) => setForm((f) => ({ ...f, postalCode: e.target.value.replace(/\D/g, "").slice(0, 6) }))} inputMode="numeric" autoComplete="postal-code" placeholder="560001" className={`${inputClass} ${pinInvalid ? "border-danger" : ""}`} maxLength={6} />
+                </Field>
+                <Field label="Country">
+                    <input value={form.country} onChange={set("country")} autoComplete="country-name" placeholder="India" className={inputClass} maxLength={60} />
                 </Field>
             </div>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
@@ -254,7 +275,7 @@ export function SessionsCard({ sessions, onChanged }: { sessions: DeviceSession[
                                     {device.badge ? ` · ${device.badge}` : ""}
                                     {session.current ? " · This device" : ""}
                                 </p>
-                                <p className="text-xs text-dim">{[session.ipAddress, relativeTime(session.lastUsedAt ?? session.createdAt)].filter(Boolean).join(" · ")}</p>
+                                <p className="text-xs text-dim">{[session.ipAddress, sessionPlace(session), relativeTime(session.lastUsedAt ?? session.createdAt)].filter(Boolean).join(" · ")}</p>
                             </div>
                             {!session.current && (
                                 <button type="button" onClick={() => void revoke(session.id)} className="text-sm font-medium text-brand-bright hover:underline disabled:opacity-50" disabled={busy !== null}>
@@ -342,29 +363,14 @@ export function PasswordCard({ profile, onChanged }: { profile: UserProfile; onC
 /* Two-factor                                                          */
 /* ------------------------------------------------------------------ */
 
-/** Two-factor authentication, as `GET /auth/2fa/status` reports it for this account. */
-export function TwoFactorCard({ status }: { status: TwoFactorStatus | null }) {
-    const enrolled = !!status?.authenticator?.enrolled;
-    const left = status?.authenticator?.recoveryCodesLeft;
-    const total = status?.authenticator?.recoveryCodesTotal ?? 10;
+/**
+ * Security (2FA-A): the authenticator app as this account's second factor,
+ * as `GET /auth/2fa/status` reports it — set up, recovery codes, remove.
+ */
+export function TwoFactorCard({ status, onChanged }: { status: TwoFactorStatus | null; onChanged: () => void }) {
     return (
-        <HeaderCard title="Two-factor authentication" line="Protect your advertiser account with an extra sign-in step">
-            <div className="flex items-center gap-3">
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-success-soft text-success">
-                    <ShieldCheck className="size-4" aria-hidden />
-                </span>
-                <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-ink">Authenticator app</p>
-                    <p className="text-xs text-dim">{enrolled ? `Registered ${longDate(status?.authenticator?.enrolledAt)}` : "Not set up · your sign-in is protected by the code sent to your phone"}</p>
-                </div>
-                <StatusChip label={enrolled ? "Verified" : "Phone code"} tone={enrolled ? "success" : "neutral"} />
-            </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-                <p className="text-xs text-dim">{enrolled && typeof left === "number" ? `${left} of ${total} recovery codes unused` : "Authenticator sign-in is not available for advertiser accounts yet."}</p>
-                <button type="button" className={btnSmall} disabled title={enrolled ? "Recovery codes are shown once, when the authenticator is set up." : "Not available yet"}>
-                    {enrolled ? "View recovery codes" : "Set up authenticator"}
-                </button>
-            </div>
+        <HeaderCard id="security" title="Security" line="An authenticator app adds a second step to every sign-in — by email, phone, Google or Facebook">
+            <AuthenticatorSetup status={status} onChanged={onChanged} sideLabel="advertiser account" />
         </HeaderCard>
     );
 }

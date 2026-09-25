@@ -12,6 +12,7 @@ import {
     evidenceLine,
     initials,
     mayHaveEvidence,
+    orderRef,
     PROOF_STATUSES,
     proofStatus,
     type AdvertiserOrder,
@@ -140,7 +141,7 @@ function ProofsPage() {
                                                     {order.listing.title}
                                                 </Link>
                                             }
-                                            line={[order.listing.city, publisher ?? categoryLabel(order.listing.category)].filter(Boolean).join(" · ")}
+                                            line={[orderRef(order), order.listing.city, publisher ?? categoryLabel(order.listing.category)].filter(Boolean).join(" · ")}
                                         />
                                     </div>
                                 </Td>

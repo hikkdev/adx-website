@@ -4,7 +4,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, onSessionEnded, tokens } from "./api-client";
 import { useCart } from "./cart";
-import { authService, isSignupHandoff, normaliseEmail, normaliseMobile, type SendOtpResult, type SessionTokens, type SessionUser, type SignupHandoff } from "@/services/auth";
+import { authService, isChallenge, isSignupHandoff, normaliseEmail, normaliseMobile, pendingChallenge, type DoorResult, type SendOtpResult, type SessionTokens, type SessionUser, type SignupHandoff, type TwoFactorChallenge } from "@/services/auth";
 import { partyService, type AccountType, type Party } from "@/services/party";
 
 /**
@@ -20,6 +20,13 @@ import { partyService, type AccountType, type Party } from "@/services/party";
  */
 type Status = "restoring" | "signed-out" | "signed-in";
 
+/**
+ * What a sign-in door came to: a session; ED-1's hand-off to the phone
+ * step (a new address); or 2FA-A's challenge, remembered in this tab for
+ * `/verify-2fa` to finish.
+ */
+export type DoorOutcome = { kind: "signed-in"; user: SessionUser } | { kind: "signup"; signup: SignupHandoff } | { kind: "challenge"; challenge: TwoFactorChallenge };
+
 interface AuthValue {
     status: Status;
     user: SessionUser | null;
@@ -30,11 +37,17 @@ interface AuthValue {
     /** ED-1: true while the signed-in account's email is still to prove (the stamp exists and is null). */
     needsEmail: boolean;
     sendOtp: (mobile: string) => Promise<SendOtpResult>;
-    /** ED-1: `signupToken` ends an email sign-up — the proven address is written onto this number's account. */
-    verifyOtp: (mobile: string, otp: string, signupToken?: string | null) => Promise<SessionUser>;
+    /** ED-1: `signupToken` ends an email sign-up — the proven address is written onto this number's account. 2FA-A: may come to a challenge. */
+    verifyOtp: (mobile: string, otp: string, signupToken?: string | null) => Promise<DoorOutcome>;
     sendEmailOtp: (email: string) => Promise<SendOtpResult>;
     /** ED-1: a known address signs in; a new one hands off to the phone step. */
-    verifyEmailOtp: (email: string, otp: string) => Promise<{ kind: "signed-in"; user: SessionUser } | { kind: "signup"; signup: SignupHandoff }>;
+    verifyEmailOtp: (email: string, otp: string) => Promise<DoorOutcome>;
+    /** G-2: Google's id token through `POST /auth/google`. */
+    google: (idToken: string) => Promise<DoorOutcome>;
+    /** FB-1: Facebook's access token through `POST /auth/facebook`. */
+    facebook: (accessToken: string) => Promise<DoorOutcome>;
+    /** 2FA-A: the app's code (or a recovery code) against the remembered challenge. */
+    completeChallenge: (challengeToken: string, code: string) => Promise<{ user: SessionUser; recoveryCodesLeft?: number; warning?: string | null }>;
     signInWithTokens: (result: SessionTokens) => Promise<SessionUser>;
     chooseParty: (input: { party: Party; accountType: AccountType; name?: string }) => Promise<void>;
     setPreferredParty: (party: Party) => void;
@@ -119,18 +132,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const sendOtp = React.useCallback((mobile: string) => authService.sendOtp(normaliseMobile(mobile)), []);
 
-    const verifyOtp = React.useCallback(
-        async (mobile: string, otp: string, signupToken?: string | null) => signInWithTokens(await authService.verifyOtp(normaliseMobile(mobile), otp, signupToken)),
+    /** One rule for every door: a hand-off and a challenge are handed back; tokens become the session. */
+    const settleDoor = React.useCallback(
+        async (result: DoorResult): Promise<DoorOutcome> => {
+            if (isSignupHandoff(result)) return { kind: "signup", signup: result.signup };
+            if (isChallenge(result)) {
+                pendingChallenge.remember(result.challenge);
+                return { kind: "challenge", challenge: result.challenge };
+            }
+            return { kind: "signed-in", user: await signInWithTokens(result) };
+        },
         [signInWithTokens]
+    );
+
+    const verifyOtp = React.useCallback(
+        async (mobile: string, otp: string, signupToken?: string | null) => settleDoor(await authService.verifyOtp(normaliseMobile(mobile), otp, signupToken)),
+        [settleDoor]
     );
 
     const sendEmailOtp = React.useCallback((email: string) => authService.sendEmailOtp(normaliseEmail(email)), []);
 
-    const verifyEmailOtp = React.useCallback(
-        async (email: string, otp: string) => {
-            const result = await authService.verifyEmailOtp(normaliseEmail(email), otp);
-            if (isSignupHandoff(result)) return { kind: "signup" as const, signup: result.signup };
-            return { kind: "signed-in" as const, user: await signInWithTokens(result) };
+    const verifyEmailOtp = React.useCallback(async (email: string, otp: string) => settleDoor(await authService.verifyEmailOtp(normaliseEmail(email), otp)), [settleDoor]);
+
+    const google = React.useCallback(async (idToken: string) => settleDoor(await authService.google(idToken)), [settleDoor]);
+
+    const facebook = React.useCallback(async (accessToken: string) => settleDoor(await authService.facebook(accessToken)), [settleDoor]);
+
+    const completeChallenge = React.useCallback(
+        async (challengeToken: string, code: string) => {
+            const result = await authService.verifyTwoFactor(challengeToken, code);
+            pendingChallenge.clear();
+            const user = await signInWithTokens(result);
+            return { user, recoveryCodesLeft: result.recoveryCodesLeft, warning: result.warning };
         },
         [signInWithTokens]
     );
@@ -174,8 +207,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const needsEmail = !!user && user.emailVerifiedAt === null;
 
     const value = React.useMemo<AuthValue>(
-        () => ({ status, user, party, parties, cartCount: lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, refresh: read }),
-        [status, user, party, parties, lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, signInWithTokens, chooseParty, setPreferredParty, signOut, read]
+        () => ({ status, user, party, parties, cartCount: lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, google, facebook, completeChallenge, signInWithTokens, chooseParty, setPreferredParty, signOut, refresh: read }),
+        [status, user, party, parties, lines.length, needsEmail, sendOtp, verifyOtp, sendEmailOtp, verifyEmailOtp, google, facebook, completeChallenge, signInWithTokens, chooseParty, setPreferredParty, signOut, read]
     );
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

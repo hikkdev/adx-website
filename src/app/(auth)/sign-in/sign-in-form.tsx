@@ -6,10 +6,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AtSign, Phone } from "lucide-react";
 import { toast } from "sonner";
 import { AuthCard, AuthTitle, primaryButton } from "@/components/auth/auth-card";
+import { FacebookButton } from "@/components/auth/facebook-button";
 import { GoogleButton, hasGoogleSignIn } from "@/components/auth/google-button";
-import { useAuth } from "@/lib/auth";
-import { messageOf } from "@/lib/api-client";
-import { authService, destinationFor, looksLikeEmail, normaliseEmail, normaliseMobile, otpFailure, safeNext } from "@/services/auth";
+import { useAuth, type DoorOutcome } from "@/lib/auth";
+import { ApiError, messageOf } from "@/lib/api-client";
+import { challengeHref, destinationFor, looksLikeEmail, normaliseEmail, normaliseMobile, otpFailure, safeNext, signupHref } from "@/services/auth";
 
 /** Where to go once signed in: the page that sent us here, else the workspace chooser decides. */
 export function afterSignIn(next: string | null): string {
@@ -22,14 +23,16 @@ type Door = "email" | "mobile";
  * DR 12 · 03 · 01 · Log in or sign up (5204:61723). The frame asks the
  * email; ED-1 keeps it first on the web and adds the number as the other
  * way in — every account proves both, so whichever comes first, the other
- * is asked next. Google stays for linked accounts; Facebook is drawn as the
- * frame draws it and says it is not ready.
+ * is asked next. G-2 and FB-1: Google and Facebook are doors too — a known
+ * address signs in, a new one goes to the phone step with the proof of the
+ * email. 2FA-A: an account with an authenticator answers it on `/verify-2fa`.
+ * Facebook is drawn disabled, as the frame draws it, until the app id is set.
  */
 export function SignInForm() {
     const router = useRouter();
     const params = useSearchParams();
     const next = params.get("next");
-    const { status, sendOtp, sendEmailOtp, signInWithTokens } = useAuth();
+    const { status, sendOtp, sendEmailOtp, google: googleDoor, facebook: facebookDoor } = useAuth();
     const [door, setDoor] = React.useState<Door>(params.get("door") === "mobile" ? "mobile" : "email");
     const [email, setEmail] = React.useState(params.get("email") ?? "");
     const [mobile, setMobile] = React.useState("");
@@ -76,16 +79,44 @@ export function SignInForm() {
         }
     };
 
+    /** Where a provider door came to: the session's destination, the phone step, or the second factor. */
+    const settle = React.useCallback(
+        (outcome: DoorOutcome) => {
+            if (outcome.kind === "signup") router.replace(signupHref(outcome.signup, next));
+            else if (outcome.kind === "challenge") router.replace(challengeHref(next));
+            else router.replace(destinationFor(outcome.user, next));
+        },
+        [router, next]
+    );
+
     const google = React.useCallback(
         async (idToken: string) => {
             try {
-                const me = await signInWithTokens(await authService.google(idToken));
-                router.replace(destinationFor(me, next));
+                settle(await googleDoor(idToken));
             } catch (caught) {
                 toast.error(messageOf(caught, "Google sign-in did not go through."));
             }
         },
-        [signInWithTokens, router, next]
+        [googleDoor, settle]
+    );
+
+    const facebook = React.useCallback(
+        async (accessToken: string) => {
+            try {
+                settle(await facebookDoor(accessToken));
+            } catch (caught) {
+                if (caught instanceof ApiError && caught.code === "FACEBOOK_EMAIL_REQUIRED") {
+                    setError("Your Facebook account shares no email address with ADX. Continue with your email or mobile number instead.");
+                    return;
+                }
+                if (caught instanceof ApiError && caught.status === 503) {
+                    toast.error("Facebook sign-in is not set up on ADX yet. Use your email or mobile number.");
+                    return;
+                }
+                toast.error(messageOf(caught, "Facebook sign-in did not go through."));
+            }
+        },
+        [facebookDoor, settle]
     );
 
     return (
@@ -154,10 +185,10 @@ export function SignInForm() {
                         Google
                     </button>
                 )}
-                <button type="button" disabled title="Facebook sign-in is not available yet" className="flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-white text-sm font-medium text-ink opacity-60">
+                <FacebookButton onToken={facebook} disabled={busy}>
                     <FacebookMark />
                     Facebook
-                </button>
+                </FacebookButton>
             </div>
             <p className="mt-2 text-xs text-dim">Every ADX account proves an email and a mobile number. Whichever you start with, the other comes next.</p>
 

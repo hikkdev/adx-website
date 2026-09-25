@@ -193,6 +193,8 @@ export interface BookingPerson {
 /** One row of `GET /orders/my?as=publisher` — the order and its listing. */
 export interface Booking {
     id: string;
+    /** BK-1: BKG-DDMM-YYNN; null on rows from before the ids. */
+    displayId?: string | null;
     status: OrderStatus;
     campaignName: string | null;
     campaignId?: string | null;
@@ -235,6 +237,10 @@ export interface BookingDetail extends Booking {
     agent?: { id: string; city: string | null; user: BookingPerson | null } | null;
     verification?: { qrScanned: boolean; checklistPassed: boolean; notes: string | null; verifiedAt: string | null } | null;
     checkIn?: { latitude: number; longitude: number; distanceM: number; checkedInAt: string } | null;
+    /** SI-N: what the publisher wrote beside their own condition or installation photos. */
+    selfInstallNotes?: string | null;
+    selfInstallConditionPhotoUrls?: string[];
+    selfInstallInstallPhotoUrl?: string | null;
     milestones?: BookingMilestone[];
     campaign?: { id: string; name: string; reference?: string; advertiser?: { name: string } | null } | null;
     quotedFee?: Money | null;
@@ -503,13 +509,18 @@ export interface DeviceSession {
     id: string;
     userAgent: string | null;
     ipAddress: string | null;
+    /** SL-1: where the address was last seen — null until looked up, or when the address is private. */
+    city?: string | null;
+    region?: string | null;
+    country?: string | null;
     lastUsedAt: string | null;
     createdAt: string;
     expiresAt: string;
     current?: boolean;
 }
 
-export type NotificationType = "ORDER" | "BOOKING" | "PAYOUT" | "KYC" | "MESSAGE" | "SYSTEM" | "DISPUTE" | "ANNOUNCEMENT" | "WORK";
+/** WS-1: WEEKLY_SUMMARY is the Monday digest, email on by default. */
+export type NotificationType = "ORDER" | "BOOKING" | "PAYOUT" | "KYC" | "MESSAGE" | "SYSTEM" | "DISPUTE" | "ANNOUNCEMENT" | "WORK" | "WEEKLY_SUMMARY";
 export type NotificationChannel = "IN_APP" | "PUSH" | "EMAIL" | "SMS";
 
 export interface NotificationPreference {
@@ -575,9 +586,10 @@ export const publisherWorkspace = {
     confirmSlot: (id: string) => api.post<Booking>(`/orders/${id}/confirm-slot`, {}),
     counterSlot: (id: string, counterNote?: string) => api.post<Booking>(`/orders/${id}/counter-slot`, counterNote ? { counterNote } : {}),
     selfCollectPrints: (id: string, photoUrl: string) => api.post<Booking>(`/orders/${id}/self-install/collect-prints`, { photoUrl }),
-    selfCaptureCondition: (id: string, photoUrls: string[]) => api.post<Booking>(`/orders/${id}/self-install/capture-condition`, { photoUrls }),
+    /** SI-N: `note` (≤500 characters) is what the publisher wrote beside the photos; it lands on the order as `selfInstallNotes`. */
+    selfCaptureCondition: (id: string, photoUrls: string[], note?: string) => api.post<Booking>(`/orders/${id}/self-install/capture-condition`, { photoUrls, ...(note?.trim() ? { note: note.trim().slice(0, 500) } : {}) }),
     selfCheckIn: (id: string, position?: { latitude: number; longitude: number }) => api.post<Booking>(`/orders/${id}/self-install/checkin`, position ?? {}),
-    selfCaptureInstallation: (id: string, photoUrl: string) => api.post<Booking>(`/orders/${id}/self-install/capture-installation`, { photoUrl }),
+    selfCaptureInstallation: (id: string, photoUrl: string, note?: string) => api.post<Booking>(`/orders/${id}/self-install/capture-installation`, { photoUrl, ...(note?.trim() ? { note: note.trim().slice(0, 500) } : {}) }),
 
     /* Money */
     wallet: () => api.get<WalletSnapshot>("/payouts/wallet"),
@@ -820,9 +832,9 @@ export function relativeTime(iso: string | null | undefined, now: Date = new Dat
 
 export type Tone = "success" | "warning" | "danger" | "info" | "neutral" | "ink";
 
-/** A booking reference to quote. Orders carry no display id, so this is the tail of the id. */
-export function bookingRef(booking: Pick<Booking, "id">): string {
-    return `BKG-${booking.id.slice(-6).toUpperCase()}`;
+/** BK-1: the booking's id as people quote it — BKG-DDMM-YYNN, or the tail of the internal id on a row from before the ids. */
+export function bookingRef(booking: Pick<Booking, "id" | "displayId">): string {
+    return booking.displayId || `BKG-${booking.id.slice(-6).toUpperCase()}`;
 }
 
 const BOOKING_WORDS: Record<OrderStatus, { label: string; tone: Tone }> = {
@@ -1146,6 +1158,12 @@ export function maskedPhone(mobile: string | null | undefined): string {
     return `${code}${local.slice(0, 2)}••• ••${local.slice(-3)}`;
 }
 
+/** SL-1: "Bengaluru, India" — the city and the country when known, the region standing in for a missing city; null when nothing was looked up. */
+export function sessionPlace(session: Pick<DeviceSession, "city" | "region" | "country">): string | null {
+    const parts = [session.city || session.region || null, session.country || null].filter((part): part is string => !!part);
+    return parts.length ? parts.join(", ") : null;
+}
+
 /** "MacBook Pro" is not on a user agent; "Chrome on Windows" is what can honestly be read off it. */
 export function describeSession(userAgent: string | null): { name: string; platform: string | null; kind: "desktop" | "phone" } {
     const ua = (userAgent ?? "").trim();
@@ -1179,7 +1197,7 @@ export const NOTIFICATION_SWITCHES: { key: string; type: NotificationType | null
     { key: "booking", type: "BOOKING", label: "Booking requests", hint: "Email me when an advertiser requests my space" },
     { key: "artwork", type: "ORDER", label: "Artwork and proof updates", hint: "Send updates when artwork or installation proof needs attention" },
     { key: "payout", type: "PAYOUT", label: "Payout updates", hint: "Notify me when money reaches my bank account" },
-    { key: "weekly", type: null, label: "Weekly business summary", hint: "Sent every Monday at 9:00 AM IST" },
+    { key: "weekly", type: "WEEKLY_SUMMARY", label: "Weekly campaign summary", hint: "A summary of the bookings on your spaces, sent every Monday" },
 ];
 
 /** The KYC status as the profile prints it. */

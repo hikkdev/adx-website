@@ -58,10 +58,16 @@ export interface BankTransferDetails {
 /** `GET /payments/bank-transfer/details` — the account, or why the option is not offered. */
 export type BankTransferAvailability = { configured: true; details: BankTransferDetails } | { configured: false; missing?: string[] };
 
+/** UP-1: Cashfree's answer to a collect request on the payer's UPI id — the session still opens the ordinary way. */
+export type UpiCollect = { requested: true; upiId: string; cfPaymentId: string | null } | { requested: false; upiId: string; error: string };
+
+/** RF-1: what an intent pays for — the whole campaign, or the reservation fee on it. */
+export type PaymentPurpose = "SETTLEMENT" | "RESERVATION_FEE";
+
 export interface PaymentIntent {
     payment: PaymentSummary;
-    /** What the gateway needs to open its checkout — shape per gateway. */
-    checkout?: Record<string, unknown>;
+    /** What the gateway needs to open its checkout — shape per gateway; `upiCollect` on Cashfree when a UPI id was sent. */
+    checkout?: Record<string, unknown> & { upiCollect?: UpiCollect };
     /** The backend's own checkout page under its one-time token (Razorpay); null for the redirect-flow gateways. */
     checkoutUrl?: string | null;
     /** A BANK_TRANSFER intent: the account to pay into, with the reference to quote and the exact amount. */
@@ -84,7 +90,8 @@ export const paymentsService = {
         if (!Array.isArray(answer)) return [];
         return answer.filter((row): row is GatewayStatus => !!row && typeof row === "object" && typeof (row as GatewayStatus).gateway === "string");
     },
-    createIntent: (body: { campaignId: string; gateway: PaymentGateway }) => api.post<PaymentIntent>("/payments/intents", body),
+    /** RF-1: `purpose: 'RESERVATION_FEE'` collects the fee instead of the total. UP-1: `upiId` asks Cashfree for a collect request, or prefills Razorpay's VPA. */
+    createIntent: (body: { campaignId: string; gateway: PaymentGateway; purpose?: PaymentPurpose; upiId?: string }) => api.post<PaymentIntent>("/payments/intents", body),
     get: (id: string) => api.get<PaymentSummary>(`/payments/${encodeURIComponent(id)}`),
     confirm: (id: string, body: { gatewayPaymentId: string; signature: string; gatewayOrderId?: string }) => api.post<PaymentSummary>(`/payments/${encodeURIComponent(id)}/confirm`, body),
     /** `GET /payments/:id/return` — the backend's own status page; the web reads the row instead, but the URL is here for a link. */
@@ -102,6 +109,13 @@ export const paymentsService = {
 
 /** Whether a failure is the backend saying a contract is not there yet. */
 export const notAvailableYet = (caught: unknown): boolean => caught instanceof ApiError && caught.status === 404;
+
+/** UP-1: the collect request Cashfree made on the payer's UPI id, when the intent carried one. */
+export function upiCollectOf(intent: Pick<PaymentIntent, "checkout">): UpiCollect | null {
+    const collect = intent.checkout?.upiCollect;
+    if (!collect || typeof collect !== "object" || typeof (collect as UpiCollect).requested !== "boolean") return null;
+    return collect as UpiCollect;
+}
 
 /** The card/UPI gateways the picker may offer: configured ones, in the server's order. */
 export const configuredGateways = (rows: GatewayStatus[]): GatewayStatus[] => rows.filter((row) => row.configured && row.gateway !== "BANK_TRANSFER");
@@ -203,24 +217,24 @@ const LAST_PAYMENT_KEY = "adx.web.payment";
 
 /** The payment this browser last opened for a campaign, so the return page can find it and offer the gateway page again. */
 export const lastPayment = {
-    remember(campaignId: string, payment: { id: string; url: string | null; method: PayMethod }) {
+    remember(campaignId: string, payment: { id: string; url: string | null; method: PayMethod; purpose?: PaymentPurpose }) {
         try {
             window.sessionStorage.setItem(`${LAST_PAYMENT_KEY}.${campaignId}`, JSON.stringify(payment));
         } catch {
             /* ignore */
         }
     },
-    read(campaignId: string): { id: string; url: string | null; method: PayMethod } | null {
+    read(campaignId: string): { id: string; url: string | null; method: PayMethod; purpose?: PaymentPurpose } | null {
         try {
             const raw = window.sessionStorage.getItem(`${LAST_PAYMENT_KEY}.${campaignId}`);
-            return raw ? (JSON.parse(raw) as { id: string; url: string | null; method: PayMethod }) : null;
+            return raw ? (JSON.parse(raw) as { id: string; url: string | null; method: PayMethod; purpose?: PaymentPurpose }) : null;
         } catch {
             return null;
         }
     },
 };
 
-/** A UPI id: something@handle. */
-export const UPI_ID_PATTERN = /^[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}$/;
+/** A UPI id, as the backend takes it: `name@bank` — a handle of letters, digits, dots, dashes or underscores, then a bank of letters and digits. */
+export const UPI_ID_PATTERN = /^[\w.\-]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$/;
 /** A UTR / transaction reference: 12–22 letters and digits. */
 export const UTR_PATTERN = /^[A-Za-z0-9]{12,22}$/;
