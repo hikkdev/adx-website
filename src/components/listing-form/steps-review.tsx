@@ -1,15 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { documentSlotsFor, RIGHTS_OPTIONS, type Catalogue, type RightsBasis } from "@/services/listing-editor";
+import { cityStageNote, documentSlotsFor, listingEditorService, RIGHTS_OPTIONS, type Catalogue, type RightsBasis } from "@/services/listing-editor";
 import { cn } from "@/lib/utils";
+import { useInstantBookingOn } from "./instant-booking";
 import { CheckBar, Field, GroupTitle, Note, Pill, Row, SelectField } from "./fields";
 import { formatName, missingBeforeSubmit, photosOf, summaryOf, type ListingForm, type StepKey } from "./form-model";
 import type { StepProps } from "./steps-choose";
 import { DocumentSlot, PhotoSlot, RequirementRow } from "./uploads";
 
-/** One review row: a title, a line under it, Edit at the right (5204:80161). */
-function ReviewRow({ title, line, onEdit, muted }: { title: string; line: string; onEdit: () => void; muted?: boolean }) {
+/** One review row: a title, a line under it, Edit at the right (5204:80161). FL-1: also the flow's review rows. */
+export function ReviewRow({ title, line, onEdit, muted }: { title: string; line: string; onEdit: () => void; muted?: boolean }) {
     return (
         <div className="flex items-center justify-between gap-6 border-t border-line py-4">
             <div>
@@ -23,7 +24,7 @@ function ReviewRow({ title, line, onEdit, muted }: { title: string; line: string
     );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+export function Fact({ label, value }: { label: string; value: string }) {
     return (
         <div>
             <p className="text-xs text-dim">{label}</p>
@@ -32,10 +33,38 @@ function Fact({ label, value }: { label: string; value: string }) {
     );
 }
 
+/**
+ * Lot V: the stage ADX is at in the listing's city (`GET /app/geo/resolve`),
+ * read on the review step so the publisher hears what it means before the
+ * submit rather than from the server after it. A failed read says nothing.
+ */
+export function useCityStage(city: string): { tone: "warning" | "info"; text: string } | null {
+    const name = city.trim();
+    const [answer, setAnswer] = React.useState<{ name: string; note: { tone: "warning" | "info"; text: string } | null } | null>(null);
+    React.useEffect(() => {
+        if (!name) return;
+        let live = true;
+        listingEditorService
+            .resolveCity(name)
+            .then((resolution) => {
+                if (live) setAnswer({ name, note: cityStageNote(resolution, name) });
+            })
+            .catch(() => {
+                if (live) setAnswer({ name, note: null });
+            });
+        return () => {
+            live = false;
+        };
+    }, [name]);
+    return name && answer?.name === name ? answer.note : null;
+}
+
 /** 20 · Listing review (5204:80161): the summary, the two red links, six sections with Edit. */
 export function ReviewStep({ form, catalogue, go }: StepProps & { go: (step: StepKey) => void }) {
     const s = summaryOf(form, catalogue);
     const missing = missingBeforeSubmit(form, catalogue);
+    const instantOn = useInstantBookingOn();
+    const cityNote = useCityStage(form.category === "MEDIA" ? form.coverage || form.city : form.city);
     const describe = (parts: (string | null)[], empty: string) => {
         const filled = parts.filter(Boolean);
         return filled.length ? filled.join(" · ") : empty;
@@ -53,7 +82,13 @@ export function ReviewStep({ form, catalogue, go }: StepProps & { go: (step: Ste
                 </div>
                 <Fact label="Location" value={s.location} />
                 <Fact label="Pricing" value={s.pricing} />
+                {instantOn && <Fact label="Bookings" value={form.instantBooking ? "Accepted automatically" : "Reviewed by you"} />}
             </div>
+            {cityNote && (
+                <div role="status" className={cn("mt-5 rounded-md border px-4 py-3 text-sm", cityNote.tone === "warning" ? "border-warning/30 bg-warning-soft text-warning" : "border-info/30 bg-info-soft text-info")}>
+                    {cityNote.text}
+                </div>
+            )}
             <div className="mt-6 space-y-3">
                 <button type="button" onClick={() => go("category")} className="block text-sm font-medium text-brand-bright hover:underline">
                     Edit category, venue or format

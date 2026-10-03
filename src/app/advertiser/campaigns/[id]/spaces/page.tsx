@@ -5,6 +5,7 @@ import Link from "next/link";
 import { messageOf } from "@/lib/api-client";
 import { BookingCard, ErrorNote, StepFooter, smallButton } from "@/components/booking/booking-frame";
 import { ChargesTable } from "@/components/booking/charges";
+import { ClashHint } from "@/components/booking/clash-hint";
 import { DateRangeDialog } from "@/components/booking/date-range-dialog";
 import { PrintChoice } from "@/components/booking/print-choice";
 import { SpaceLineCard } from "@/components/booking/space-line";
@@ -102,6 +103,7 @@ function SpacesStep({ ready }: { ready: ReadyCampaign }) {
                                         }
                                     />
                                     {clash && <p className="mt-1.5 text-xs text-[#b42318]">No slot left on these dates — taken while you were building the campaign. Remove it or change the dates.</p>}
+                                    {clash && <ClashHint className="mt-1" listingId={spot.listingId} length={days} quantity={line?.quantity ?? spot.quantity} campaignDates={{ from: campaign.startDate, to: campaign.endDate }} />}
                                     {!kind.digital && <PrintChoice className="mt-2 px-1" value={spot.fulfilment ?? line?.fulfilment ?? null} campaignChoice={campaign.fulfilment} disabled={busy !== null} onChange={(next) => void choosePrint(spot.listingId, next)} />}
                                 </div>
                             );
@@ -134,6 +136,7 @@ function SpacesStep({ ready }: { ready: ReadyCampaign }) {
                                                 {[match.mediaTypeName, match.size, match.city].filter(Boolean).join(" · ")} · {rupees(match.lineTotal)} for {days} days
                                                 {match.clashes ? " · no slot left" : ""}
                                             </p>
+                                            {match.clashes && <ClashHint className="mt-0.5" listingId={match.listingId} length={days} campaignDates={{ from: campaign.startDate, to: campaign.endDate }} />}
                                         </div>
                                     </div>
                                     <button type="button" disabled={match.clashes || busy === match.listingId} onClick={() => void add(match.listingId)} className={smallButton}>

@@ -4,6 +4,7 @@ import * as React from "react";
 import { FileText, Upload, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { messageOf } from "@/lib/api-client";
+import { PrivateImage } from "@/components/files/private-file";
 import { publisherWorkspace, type UploadedFile } from "@/services/publisher-workspace";
 
 type Purpose = "KYC" | "VERIFICATION" | "SUPPORT_ATTACHMENT" | "OTHER";
@@ -55,17 +56,21 @@ export function UploadBox({
         }
     };
 
-    /* A private file (KYC, a support attachment) is served only through `/files/:id` with the bearer, so the browser cannot draw it as a picture. */
-    const isPrivate = purpose === "KYC" || purpose === "SUPPORT_ATTACHMENT";
-    const isImage = !isPrivate && !!value && (/\.(png|jpe?g|webp|gif|heic)(\?|$)/i.test(value.url) || (name ? /\.(png|jpe?g|webp|gif|heic)$/i.test(name) : false));
+    /*
+     * A private file (KYC, a support attachment, and since ST-2 on 28 Sep 2026
+     * a VERIFICATION photo) is served only through `/files/:id` with the
+     * bearer, so its thumbnail is drawn by `PrivateImage`, which fetches it
+     * with the token; a public URL is drawn as it is. Its URL carries no
+     * extension, so whether it is a picture is read off the picked name.
+     */
+    const isImage = !!value && (/\.(png|jpe?g|webp|gif|heic)(\?|$)/i.test(value.url) || (name ? /\.(png|jpe?g|webp|gif|heic)$/i.test(name) : false));
 
     return (
         <div className={className}>
             {value ? (
                 <div className={cn("relative overflow-hidden rounded-lg border border-line bg-white", compact ? "aspect-[16/10]" : "flex items-center gap-3 px-4 py-3")}>
                     {isImage ? (
-                         
-                        <img src={value.url} alt={name ?? "Uploaded photo"} className={cn(compact ? "size-full object-cover" : "size-12 rounded-md object-cover")} />
+                        <PrivateImage src={value.url} alt={name ?? "Uploaded photo"} className={cn(compact ? "size-full object-cover" : "size-12 rounded-md object-cover")} />
                     ) : (
                         <span className={cn("flex items-center justify-center rounded-md bg-ground text-dim", compact ? "size-full" : "size-12")}>
                             <FileText className="size-5" aria-hidden />

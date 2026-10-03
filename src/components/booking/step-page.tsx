@@ -35,7 +35,7 @@ export function StepPage({
     step,
     title,
     subtitle,
-    back = { href: "/advertiser", label: "Campaigns" },
+    back = { href: "/advertiser/campaigns", label: "Campaigns" },
     stepper = true,
     children,
 }: {
@@ -60,7 +60,7 @@ function StepBody({ state, step, id, title, subtitle, back, stepper, children }:
     if (state.kind === "loading") {
         return (
             <div className="mx-auto max-w-[1008px]">
-                <BookingHeader back={{ href: "/advertiser", label: "Campaigns" }} title="Loading your campaign…" />
+                <BookingHeader back={{ href: "/advertiser/campaigns", label: "Campaigns" }} title="Loading your campaign…" />
                 {stepper && <BookingStepper current={step} className="mt-6" />}
             </div>
         );
@@ -68,10 +68,10 @@ function StepBody({ state, step, id, title, subtitle, back, stepper, children }:
     if (state.kind === "error") {
         return (
             <div className="mx-auto max-w-[1008px]">
-                <BookingHeader back={{ href: "/advertiser", label: "Campaigns" }} title={state.status === 404 ? "Campaign not found" : "Could not read this campaign"} subtitle={state.message} />
+                <BookingHeader back={{ href: "/advertiser/campaigns", label: "Campaigns" }} title={state.status === 404 ? "Campaign not found" : "Could not read this campaign"} subtitle={state.message} />
                 <BookingCard className="mt-6">
                     <p className="text-sm text-dim">{state.status === 404 ? "This campaign is not in your account, or it was discarded." : "Try again in a moment."}</p>
-                    <Link href="/advertiser" className="mt-4 inline-flex text-sm font-medium text-ink underline underline-offset-2">
+                    <Link href="/advertiser/campaigns" className="mt-4 inline-flex text-sm font-medium text-ink underline underline-offset-2">
                         Back to campaigns
                     </Link>
                 </BookingCard>

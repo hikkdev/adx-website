@@ -56,13 +56,13 @@ export function CreativeScreen({ campaignId, screen, returnTo }: { campaignId: s
     const subtitle = campaign ? (isRequest ? `${campaign.name} · Creative assistance` : statusLine(campaign)) : undefined;
 
     return (
-        <PlannerShell title={title} subtitle={subtitle} bar={bar} backHref={isRequest ? null : "/advertiser"}>
+        <PlannerShell title={title} subtitle={subtitle} bar={bar} backHref={isRequest ? null : "/advertiser/campaigns"}>
             {state.kind === "loading" && <LoadingLine>Loading your campaign…</LoadingLine>}
             {state.kind === "missing" && (
                 <div className="rounded-xl border border-line bg-white p-8">
                     <p className="text-base font-semibold text-ink">This campaign is not in your workspace</p>
                     <p className="mt-2 text-sm text-dim">It may have been discarded, or it belongs to another account.</p>
-                    <Link href="/advertiser" className="mt-4 inline-flex h-12 items-center rounded-md bg-brand px-6 text-sm font-medium text-white">
+                    <Link href="/advertiser/campaigns" className="mt-4 inline-flex h-12 items-center rounded-md bg-brand px-6 text-sm font-medium text-white">
                         Back to campaigns
                     </Link>
                 </div>

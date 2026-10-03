@@ -7,12 +7,13 @@ import { toast } from "sonner";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { documentSlotsFor, isNotBuilt, listingEditorService, RIGHTS_PAPERS, type Catalogue, type ListingAudience, type ListingDocument, type MyListing } from "@/services/listing-editor";
 import { Note, Problem } from "./fields";
-import { EDIT_SECTIONS, formFromListing, patchFor, photosOf, type EditSection, type ListingForm } from "./form-model";
+import { AUDIENCE_DOCUMENT_KINDS, documentWaiversOf, EDIT_SECTIONS, formFromListing, patchFor, photosOf, type EditSection, type ListingForm } from "./form-model";
 import { DetailsStep, DescriptionStep, AudienceStep, VehicleStep, OutletStep } from "./steps-details";
 import { PricingStep, RateCardStep, RulesStep, TermsStep } from "./steps-pricing";
 import { DocumentsStep, documentsTitle } from "./steps-review";
 import { SuggestedRateCard } from "./suggested-rate";
 import { PhotoSlot } from "./uploads";
+import { useInstantBookingOn } from "./instant-booking";
 import { ListingChrome, StepActions, TaskCard } from "./wizard-frame";
 
 type Loaded = { key: string; listing: MyListing | null; catalogue: Catalogue | null; documents: ListingDocument[]; audience: ListingAudience | null; error: string | null };
@@ -25,8 +26,9 @@ type Loaded = { key: string; listing: MyListing | null; catalogue: Catalogue | n
  * papers go through `/supply`, and a photograph change has no route yet
  * and says so.
  */
-export function EditSection({ listingId, section }: { listingId: string; section: EditSection | "vehicle" }) {
+export function EditSection({ listingId, section, prefillRate = null }: { listingId: string; section: EditSection | "vehicle"; /** Lot E: "Raise the rate" opens the price with the floor in it, per day. */ prefillRate?: string | null }) {
     const router = useRouter();
+    const instantOn = useInstantBookingOn();
     const [loaded, setLoaded] = React.useState<Loaded>({ key: "", listing: null, catalogue: null, documents: [], audience: null, error: null });
     const [form, setForm] = React.useState<ListingForm | null>(null);
     const [hydrated, setHydrated] = React.useState<string>("");
@@ -52,7 +54,9 @@ export function EditSection({ listingId, section }: { listingId: string; section
                 ]);
                 if (cancelled) return;
                 setLoaded({ key, listing: { ...listing, ...(rules.length ? {} : {}) }, catalogue, documents, audience, error: null });
-                setForm(formFromListing(listing, rules, documents));
+                const hydrated = formFromListing(listing, rules, documents);
+                const floor = section === "price" && prefillRate && /^\d+(\.\d{1,2})?$/.test(prefillRate) ? prefillRate : null;
+                setForm(floor ? { ...hydrated, basePrice: String(Number(floor)), pricingUnit: "PER_DAY" } : hydrated);
                 setHydrated(key);
             } catch (caught) {
                 if (!cancelled) setLoaded({ key, listing: null, catalogue: null, documents: [], audience: null, error: caught instanceof ApiError && caught.status === 404 ? "That listing is not in your inventory." : messageOf(caught, "Could not load this listing.") });
@@ -61,7 +65,7 @@ export function EditSection({ listingId, section }: { listingId: string; section
         return () => {
             cancelled = true;
         };
-    }, [listingId, section, key]);
+    }, [listingId, section, key, prefillRate]);
 
     const ready = loaded.key === key && hydrated === key && form !== null;
     const listing = loaded.key === key ? loaded.listing : null;
@@ -92,14 +96,37 @@ export function EditSection({ listingId, section }: { listingId: string; section
                 if (form.rightsBasis) {
                     await listingEditorService.setRights(listing.id, { basis: form.rightsBasis, validUntil: form.rightsBasis === "OWNED" ? null : form.rightsValidUntil || null });
                 }
-                if (form.category === "MEDIA" && form.rateCard && form.rateCard.url !== listing.rateCardUrl) await listingEditorService.update(listing.id, { rateCardUrl: form.rateCard.url });
+                /*
+                 * The listing-data-gaps lot: the papers marked "Not applicable" / "I am the owner" are kept on the
+                 * listing (the whole list, so an un-marked one goes; ADX keeps when each was first said), and a
+                 * fresh "I own the venue" is declared.
+                 */
+                const waivers = documentWaiversOf(form);
+                const before = (listing.documentWaivers ?? []).map((w) => `${w.kind}|${w.reason ?? ""}`).sort().join(",");
+                const after = waivers.map((w) => `${w.kind}|${w.reason}`).sort().join(",");
+                const patch: Record<string, unknown> = {
+                    ...(form.category === "MEDIA" && form.rateCard && form.rateCard.url !== listing.rateCardUrl ? { rateCardUrl: form.rateCard.url } : {}),
+                    ...(before !== after ? { documentWaivers: waivers } : {}),
+                    ...(form.rightsBasis === "OWNED" && listing.rightsBasis !== "OWNED" ? { ownershipDeclared: true } : {}),
+                };
+                if (Object.keys(patch).length > 0) await listingEditorService.update(listing.id, patch);
             } else if (section === "audience") {
-                for (const file of [form.audienceDocs.barc, form.audienceDocs.footfall]) {
+                /* LF-2: the reports are papers of their own kinds (as the wizard files them); the six facts are `audienceDemographics`. */
+                for (const key of ["barc", "footfall"] as const) {
+                    const file = form.audienceDocs[key];
                     if (!file || loaded.documents.some((d) => d.url === file.url)) continue;
-                    await listingEditorService.addDocument(listing.id, { kind: "OTHER", url: file.url });
+                    await listingEditorService.addDocument(listing.id, { kind: AUDIENCE_DOCUMENT_KINDS[key], url: file.url });
                 }
+                const patch = patchFor("audience", form, catalogue);
+                if (Object.keys(patch).length > 0) await listingEditorService.update(listing.id, patch);
             } else {
-                const patch = patchFor(section === "vehicle" ? "vehicle" : section, form);
+                const patch = patchFor(section === "vehicle" ? "vehicle" : section, form, catalogue);
+                // The listing-data-gaps lot: "Available to book now?" — sent when it moved, as the live flag it is.
+                if (section === "terms" && form.availableNow !== (listing.availableNow !== false)) patch.availableNow = form.availableNow;
+                // Lot D: the switch is only drawn while the flag is on, and only a change is sent — a spot opted in before the flag went off is left as it is.
+                if (section === "terms" && instantOn && form.instantBooking !== (listing.instantBooking === true)) patch.instantBooking = form.instantBooking;
+                // Lot G: the loop the price step's stepper draws for a screen — sent when it moved, so a screen can come back down to one.
+                if (section === "price" && form.slotsTotal !== (listing.slotsTotal ?? 1)) patch.slotsTotal = form.slotsTotal;
                 if (Object.keys(patch).length === 0) throw new ApiError(0, "NOTHING", "Nothing to save on this section yet.");
                 await listingEditorService.update(listing.id, patch);
             }
@@ -118,11 +145,11 @@ export function EditSection({ listingId, section }: { listingId: string; section
         if (!form) return null;
         switch (section) {
             case "details":
-                return form.category === "MEDIA" ? <OutletStep form={form} set={set} catalogue={catalogue} /> : form.category === "TRANSIT" ? <VehicleStep form={form} set={set} catalogue={catalogue} listingId={listingId} locked /> : <DetailsStep form={form} set={set} catalogue={catalogue} locked />;
+                return form.category === "MEDIA" ? <OutletStep form={form} set={set} catalogue={catalogue} locked /> : form.category === "TRANSIT" ? <VehicleStep form={form} set={set} catalogue={catalogue} listingId={listingId} locked /> : <DetailsStep form={form} set={set} catalogue={catalogue} locked />;
             case "vehicle":
                 return <VehicleStep form={form} set={set} catalogue={catalogue} listingId={listingId} locked />;
             case "description":
-                return <DescriptionStep form={form} set={set} catalogue={catalogue} />;
+                return <DescriptionStep form={form} set={set} catalogue={catalogue} aiBucket={{ listingId }} />;
             case "audience":
                 return (
                     <div className="space-y-6">

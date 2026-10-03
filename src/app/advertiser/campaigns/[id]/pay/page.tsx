@@ -5,16 +5,23 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Copy, Info } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, messageOf } from "@/lib/api-client";
+import { ApiError, isFeatureOff, messageOf } from "@/lib/api-client";
+import { FLAG_PAYMENT_GATEWAYS, useSwitchedOff } from "@/lib/flags";
+import { FeatureOff } from "@/components/platform/feature-off";
 import { BookingCard, EditLink, ErrorNote, primaryButton, smallButton } from "@/components/booking/booking-frame";
 import { billingDraft } from "@/components/booking/billing-draft";
-import { CheckBox, FloatingField, RadioDot } from "@/components/booking/fields";
+import { ClashList } from "@/components/booking/clash-hint";
+import { AgreementAccept } from "@/components/agreements/agreement-accept";
+import { AgeGate, useAgeGate, type AgeGate as AgeGateControl } from "@/components/checkout/age-gate";
+import { FloatingField, RadioDot } from "@/components/booking/fields";
+import { InsertionOrderPanel, insertionOrderSettled } from "@/components/booking/insertion-order";
 import { launchGateway, recordAgreements, reserveCheckoutWindow, returnHref } from "@/components/booking/pay-launch";
 import { PromoCode } from "@/components/booking/promo-code";
 import { ReservationPanel } from "@/components/booking/reservation-panel";
 import { StepPage, accountNameOf, stepHref, useCampaignId, type ReadyCampaign } from "@/components/booking/step-page";
 import { SummaryRail } from "@/components/booking/summary-rail";
-import { bookingService, chargesOf, discountLabel, estimateCart, flightDays, formatFlight, insertionOrderAccepted, rupees, splitBillingAddress, type Campaign, type CampaignReview, type Eligibility, type PromoDiscount } from "@/services/booking";
+import { bookingService, chargesOf, discountLabel, estimateCart, flightDays, formatFlight, rupees, signHref, signingFromError, splitBillingAddress, type Campaign, type CampaignReview, type Eligibility, type PromoDiscount, type WalletView } from "@/services/booking";
+import { formatMoney, subtractMoney, walletCovers } from "@/services/campaigns";
 import { GATEWAY_LABEL, UPI_ID_PATTERN, UTR_PATTERN, notAvailableYet, paymentsService, pickGateway, upiCollectOf, type BankTransferDetails, type GatewayStatus, type PayMethod, type PaymentIntent, type PaymentPurpose, type PaymentSummary } from "@/services/payments";
 import { reservationOffered, reservationOfferLine, reservationService } from "@/services/reservation";
 
@@ -28,6 +35,22 @@ import { reservationOffered, reservationOfferLine, reservationService } from "@/
  * paid from the wallet or through the same intents with
  * `purpose: 'RESERVATION_FEE'`; once paid, the buttons collect the balance.
  * UP-1: the UPI id rides on the intent — Cashfree sends a collect request.
+ *
+ * Parity with the app's authorize step: the ADX wallet is the first way to
+ * pay when it covers the amount (`POST /campaigns/:id/authorize` — held now,
+ * charged when the campaign starts), and the insertion order is its own
+ * versioned text, accepted — or, above the policy's threshold, e-signed on
+ * `/sign/:id` and back here — before any button opens.
+ *
+ * The `payments.gateways` kill switch guards `POST /payments/intents`, where
+ * card, UPI and a bank transfer all start: while the platform has it off,
+ * none of the three is offered and one plain line stands in their place;
+ * the wallet (and the reservation fee from it) pays as before.
+ *
+ * 29 Sep 2026: an order needs the person placing it to be 18 or over. Every
+ * way to pay here — and the reservation — goes through the age gate
+ * (`components/checkout/age-gate.tsx`): no date of birth on file asks for it
+ * on the spot and then carries on; under 18, the buttons wait.
  */
 export default function PayPage({ params }: { params: Promise<{ id: string }> }) {
     const id = useCampaignId(params);
@@ -38,21 +61,29 @@ export default function PayPage({ params }: { params: Promise<{ id: string }> })
     );
 }
 
+type Method = PayMethod | "WALLET";
+
 function Pay({ ready }: { ready: ReadyCampaign }) {
     const router = useRouter();
     const { campaign, review, advertiser } = ready;
-    const [method, setMethod] = React.useState<PayMethod>("CARD");
+    const [picked, setMethod] = React.useState<Method | null>(null);
+    const [wallet, setWallet] = React.useState<WalletView | null>(null);
+    const [platformOpen, setPlatformOpen] = React.useState(false);
     const [gateways, setGateways] = React.useState<GatewayStatus[] | null>(null);
     const [bank, setBank] = React.useState<BankTransferDetails | null>(null);
     const [eligibility, setEligibility] = React.useState<Eligibility | null>(null);
     const [promo, setPromo] = React.useState<PromoDiscount | null>(review?.promo ?? null);
-    const [terms, setTerms] = React.useState(false);
-    const [platform, setPlatform] = React.useState(false);
+    /* Bumped when the platform agreement is accepted here, so the eligibility is read again. */
+    const [eligibilityTick, setEligibilityTick] = React.useState(0);
     const [upiId, setUpiId] = React.useState("");
     const [breakdown, setBreakdown] = React.useState(false);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const draft = React.useMemo(() => billingDraft.read(campaign.id), [campaign.id]);
+    /* The kill switch on the intents: card, UPI and the bank transfer go; the wallet stays. */
+    const gatewaysOff = useSwitchedOff(FLAG_PAYMENT_GATEWAYS);
+    /* 29 Sep 2026: 18 or over to order — asked here when the date of birth is missing. */
+    const age = useAgeGate();
 
     /* RF-1: the reservation as it stands, and the offer the review makes. */
     const reservation = campaign.reservation ?? null;
@@ -80,9 +111,9 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
             .catch(() => undefined);
         if (advertiser) {
             bookingService
-                .eligibility(advertiser.id)
+                .wallet(advertiser.id)
                 .then((row) => {
-                    if (!cancelled) setEligibility(row);
+                    if (!cancelled) setWallet(row);
                 })
                 .catch(() => undefined);
         }
@@ -91,6 +122,20 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
         };
     }, [advertiser]);
 
+    React.useEffect(() => {
+        if (!advertiser) return;
+        let cancelled = false;
+        bookingService
+            .eligibility(advertiser.id)
+            .then((row) => {
+                if (!cancelled) setEligibility(row);
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [advertiser, eligibilityTick]);
+
     const charges = review ? chargesOf(review) : estimateCart(campaign.spots.map((spot) => ({ ratePerDay: spot.ratePerDay, print: campaign.fulfilment !== "ADVERTISER_SHIPS" })), flightDays(campaign.startDate, campaign.endDate));
     /* The full payment's amount is already total − fee on the server once the fee is PAID; the fee itself while it is DUE. */
     const payable = feePaid && reservation?.payable ? Number(reservation.payable) : charges.total;
@@ -98,12 +143,19 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
     const purpose: PaymentPurpose | undefined = feeDue ? "RESERVATION_FEE" : undefined;
     const gateway = gateways ? pickGateway(gateways) : null;
     const upiValid = !upiId || UPI_ID_PATTERN.test(upiId.trim());
-    const needsInsertionOrder = review ? !insertionOrderAccepted(review) : false;
+    const insertionOrderOk = review ? insertionOrderSettled(review) : true;
     const needsPlatform = eligibility?.blockedBy.includes("AGREEMENT") ?? false;
     const profileIncomplete = eligibility?.blockedBy.includes("PROFILE") ?? false;
-    const signing = review?.signing?.required && !review.signing.satisfied ? review.signing.request : null;
     const suspended = eligibility?.blockedBy.includes("SUSPENDED") ?? false;
-    const agreementsOk = (!needsInsertionOrder || terms) && (!needsPlatform || platform);
+    const agreementsOk = insertionOrderOk && !needsPlatform;
+    const payHref = stepHref(campaign.id, "pay");
+    /* The wallet pays what is due now: the balance once the fee is PAID, else the whole checkout — compared in paise. */
+    const due = feePaid && reservation?.payable ? reservation.payable : (review?.total ?? String(charges.total));
+    const covers = !!wallet && walletCovers(wallet.spendable, due);
+    const walletShortBy = wallet && !covers ? subtractMoney(due, wallet.spendable) : null;
+    const walletOffered = !!wallet && !feeDue;
+    /* Switched off, the wallet is the only way offered — a card, UPI or bank choice made before the switch does not stand. */
+    const method: Method | null = gatewaysOff ? (walletOffered ? "WALLET" : null) : (picked ?? (walletOffered && covers ? "WALLET" : "CARD"));
     const address = splitBillingAddress(advertiser?.billingAddress);
     const billing = {
         name: draft?.legalName ?? advertiser?.companyName ?? accountNameOf(advertiser),
@@ -113,7 +165,7 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
         address: [draft?.street ?? address.street, draft?.city ?? advertiser?.city].filter(Boolean).join(", "),
     };
 
-    const blocked = suspended ? "This account cannot start a new campaign right now. Contact ADX support." : profileIncomplete ? "Complete your billing details before paying." : signing ? "The insertion order has to be signed before this campaign can be paid." : null;
+    const blocked = suspended ? "This account cannot start a new campaign right now. Contact ADX support." : profileIncomplete ? "Complete your billing details before paying." : null;
     const canReserve = !!review && reservationOffered(offer, reservation) && !blocked && review.clashes.length === 0;
 
     const gates = async () => {
@@ -127,6 +179,9 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
         if (caught instanceof ApiError && caught.code === "RESERVATION_FEE_LAPSED") return "The time to pay the reservation fee has passed. Reserve again, or pay in full.";
         return messageOf(caught, fallback);
     };
+
+    /** The same, but nothing for the payments kill switch — its own line takes the options' place once the 503 lands. */
+    const refusal = (caught: unknown, fallback: string): string | null => (isFeatureOff(caught, FLAG_PAYMENT_GATEWAYS) ? null : reservationMessage(caught, fallback));
 
     const openGateway = async (method: PayMethod) => {
         if (!gateway) return;
@@ -145,7 +200,7 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
     };
 
     const continueWithCard = async () => {
-        if (busy) return;
+        if (busy || !age.ready(() => void continueWithCard())) return;
         setBusy(true);
         setError(null);
         try {
@@ -157,25 +212,25 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
             await gates();
             router.push(stepHref(campaign.id, "pay/card"));
         } catch (caught) {
-            setError(reservationMessage(caught, "Could not continue to the card page."));
+            if (!age.caught(caught, () => void continueWithCard())) setError(refusal(caught, "Could not continue to the card page."));
             setBusy(false);
         }
     };
 
     const payWithUpi = async () => {
-        if (busy || !gateway || !upiValid) return;
+        if (busy || !gateway || !upiValid || !age.ready(() => void payWithUpi())) return;
         setBusy(true);
         setError(null);
         try {
             await openGateway("UPI");
         } catch (caught) {
-            setError(reservationMessage(caught, "Could not open the payment page."));
+            if (!age.caught(caught, () => void payWithUpi())) setError(refusal(caught, "Could not open the payment page."));
             setBusy(false);
         }
     };
 
     const reserve = async () => {
-        if (busy || !canReserve) return;
+        if (busy || !canReserve || !age.ready(() => void reserve())) return;
         setBusy(true);
         setError(null);
         try {
@@ -184,14 +239,46 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
             ready.applyReview(answer.review);
             toast.success(`Spots reserved. Pay the ${rupees(answer.reservation.fee)} fee within ${offer?.payWithinMinutes ?? 60} minutes to hold them.`);
         } catch (caught) {
-            setError(reservationMessage(caught, "Could not reserve these spots."));
+            if (!age.caught(caught, () => void reserve())) setError(reservationMessage(caught, "Could not reserve these spots."));
         } finally {
             setBusy(false);
         }
     };
 
+    /** The app's "Pay from the wallet": the amount is held on the wallet now and charged when the campaign starts. */
+    const payFromWallet = async () => {
+        if (busy || !covers || !age.ready(() => void payFromWallet())) return;
+        setBusy(true);
+        setError(null);
+        try {
+            await gates();
+            const result = await bookingService.authorize(campaign.id);
+            const failed = result.failedSpots?.length ?? 0;
+            router.push(`${stepHref(campaign.id, "submitted")}?via=wallet${failed ? `&failed=${failed}` : ""}`);
+        } catch (caught) {
+            if (age.caught(caught, () => void payFromWallet())) {
+                setBusy(false);
+                return;
+            }
+            /* DS-3: the gate carries the open signing request — straight to it, and back here after. */
+            const requestId = signingFromError(caught);
+            if (requestId) {
+                router.push(signHref(requestId, payHref));
+                return;
+            }
+            setError(
+                caught instanceof ApiError && caught.code === "INSUFFICIENT_FUNDS"
+                    ? gatewaysOff
+                        ? "Your wallet no longer covers this campaign."
+                        : "Your wallet no longer covers this campaign. Pay by card, UPI or bank transfer — it tops up the wallet and books the campaign in one go."
+                    : reservationMessage(caught, "Could not pay from your wallet.")
+            );
+            setBusy(false);
+        }
+    };
+
     const payFeeFromWallet = async () => {
-        if (busy || !reservation) return;
+        if (busy || !reservation || !age.ready(() => void payFeeFromWallet())) return;
         setBusy(true);
         setError(null);
         try {
@@ -199,7 +286,7 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
             ready.applyCampaign(answer.campaign);
             toast.success(`Reservation fee of ${rupees(answer.reservation.fee)} taken from your wallet. The spots are held.`);
         } catch (caught) {
-            setError(reservationMessage(caught, "Could not take the fee from your wallet — top it up, or pay the fee by card, UPI or bank transfer."));
+            if (!age.caught(caught, () => void payFeeFromWallet())) setError(reservationMessage(caught, "Could not take the fee from your wallet — top it up, or pay the fee by card, UPI or bank transfer."));
         } finally {
             setBusy(false);
         }
@@ -239,50 +326,78 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                         {reservation && (reservation.status === "DUE" || reservation.status === "PAID" || reservation.status === "LAPSED" || reservation.status === "RETAINED") && (
                             <ReservationPanel reservation={reservation} retainPct={retainPct}>
                                 {feeDue && (
-                                    <button type="button" onClick={() => void payFeeFromWallet()} disabled={busy || !!blocked} className={smallButton}>
+                                    <button type="button" onClick={() => void payFeeFromWallet()} disabled={busy || !!blocked || age.blocked} className={smallButton}>
                                         {busy ? "Please wait…" : `Pay ${rupees(reservation.fee)} from my wallet`}
                                     </button>
                                 )}
                             </ReservationPanel>
                         )}
-                        {feeDue && <p className="px-1 text-xs text-dim">Or pay the fee by card, UPI or bank transfer below — the rest of the checkout waits until the spots are held.</p>}
-                        <MethodRow checked={method === "CARD"} onSelect={() => setMethod("CARD")} label="Credit / debit card" trailing={<CardMarks />} />
-                        <MethodRow checked={method === "UPI"} onSelect={() => setMethod("UPI")} label="UPI" centred />
-                        {method === "UPI" && (
-                            <div className="px-1">
-                                <FloatingField label="UPI ID (optional)" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@okaxis" invalid={!upiValid} autoComplete="off" />
-                                <p className="mt-2 text-xs text-dim">
-                                    {gateway?.gateway === "CASHFREE"
-                                        ? "With a UPI id, Cashfree sends a collect request straight to your UPI app — approve it there. Its page still opens in case you would rather scan."
-                                        : gateway?.gateway === "RAZORPAY"
-                                          ? "Your UPI id is filled in on Razorpay's page; approve the request in your UPI app to complete payment."
-                                          : "Approve the request in your UPI app to complete payment."}
-                                </p>
+                        {feeDue && !gatewaysOff && <p className="px-1 text-xs text-dim">Or pay the fee by card, UPI or bank transfer below — the rest of the checkout waits until the spots are held.</p>}
+                        {walletOffered && wallet && (
+                            <div className={`rounded-md border ${method === "WALLET" ? "border-brand bg-[#fff7f7]" : "border-line bg-white"}`}>
+                                <button type="button" role="radio" aria-checked={method === "WALLET"} disabled={!covers} onClick={() => setMethod("WALLET")} className="flex h-12 w-full items-center gap-4 px-4 text-left disabled:cursor-not-allowed">
+                                    <RadioDot checked={method === "WALLET"} />
+                                    <span className="flex-1 text-sm font-semibold text-ink">ADX wallet</span>
+                                    <span className="text-sm text-dim">{formatMoney(wallet.spendable)} available</span>
+                                </button>
+                                <div className="px-4 pb-3 text-xs text-dim">
+                                    {covers ? "Held on your wallet now and charged when the campaign starts." : `Your wallet is ${formatMoney(walletShortBy)} short.${gatewaysOff ? "" : " Pay by card, UPI or bank transfer below — it tops up the wallet and books the campaign in one go."}`}
+                                    {Number(wallet.goodwill) > 0 && ` ${formatMoney(wallet.goodwill)} of the balance is ADX credit, spent before your own money.`}
+                                    {!covers && (
+                                        <>
+                                            {" "}
+                                            <Link href="/advertiser/billing" className="font-medium text-ink underline underline-offset-2">
+                                                Top up your wallet
+                                            </Link>
+                                        </>
+                                    )}
+                                </div>
                             </div>
                         )}
-                        {bank && (
-                            <BankTransferRow
-                                key={purpose ?? "SETTLEMENT"}
-                                campaignId={campaign.id}
-                                details={bank}
-                                checked={method === "BANK_TRANSFER"}
-                                onSelect={() => setMethod("BANK_TRANSFER")}
-                                amount={collecting}
-                                purpose={purpose}
-                                disabled={!!blocked || !agreementsOk}
-                                onBeforeIntent={gates}
-                                onClaimed={(payment) => {
-                                    if (purpose === "RESERVATION_FEE") {
-                                        toast.success("Transfer recorded. The spots are held once ADX confirms it.");
-                                        ready.reload();
-                                        return;
-                                    }
-                                    router.push(`${stepHref(campaign.id, "submitted")}?payment=${encodeURIComponent(payment.id)}`);
-                                }}
-                            />
-                        )}
+                        {gatewaysOff ? (
+                            <FeatureOff flag={FLAG_PAYMENT_GATEWAYS}>{walletOffered || feeDue ? "Pay from your ADX wallet, or come back later." : undefined}</FeatureOff>
+                        ) : (
+                            <>
+                                <MethodRow checked={method === "CARD"} onSelect={() => setMethod("CARD")} label="Credit / debit card" trailing={<CardMarks />} />
+                                <MethodRow checked={method === "UPI"} onSelect={() => setMethod("UPI")} label="UPI" centred />
+                                {method === "UPI" && (
+                                    <div className="px-1">
+                                        <FloatingField label="UPI ID (optional)" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@okaxis" invalid={!upiValid} autoComplete="off" />
+                                        <p className="mt-2 text-xs text-dim">
+                                            {gateway?.gateway === "CASHFREE"
+                                                ? "With a UPI id, Cashfree sends a collect request straight to your UPI app — approve it there. Its page still opens in case you would rather scan."
+                                                : gateway?.gateway === "RAZORPAY"
+                                                  ? "Your UPI id is filled in on Razorpay's page; approve the request in your UPI app to complete payment."
+                                                  : "Approve the request in your UPI app to complete payment."}
+                                        </p>
+                                    </div>
+                                )}
+                                {bank && (
+                                    <BankTransferRow
+                                        key={purpose ?? "SETTLEMENT"}
+                                        campaignId={campaign.id}
+                                        details={bank}
+                                        checked={method === "BANK_TRANSFER"}
+                                        onSelect={() => setMethod("BANK_TRANSFER")}
+                                        amount={collecting}
+                                        purpose={purpose}
+                                        disabled={!!blocked || !agreementsOk || age.blocked}
+                                        age={age}
+                                        onBeforeIntent={gates}
+                                        onClaimed={(payment) => {
+                                            if (purpose === "RESERVATION_FEE") {
+                                                toast.success("Transfer recorded. The spots are held once ADX confirms it.");
+                                                ready.reload();
+                                                return;
+                                            }
+                                            router.push(`${stepHref(campaign.id, "submitted")}?payment=${encodeURIComponent(payment.id)}`);
+                                        }}
+                                    />
+                                )}
 
-                        {gateways && !gateway && method !== "BANK_TRANSFER" && <p className="rounded-md bg-ground px-3 py-2 text-sm text-dim">No card or UPI gateway is set up yet — ask ADX{bank ? ", or pay by bank transfer" : ""}.</p>}
+                                {gateways && !gateway && method !== "BANK_TRANSFER" && <p className="rounded-md bg-ground px-3 py-2 text-sm text-dim">No card or UPI gateway is set up yet — ask ADX{bank ? ", or pay by bank transfer" : ""}.</p>}
+                            </>
+                        )}
 
                         <PromoCode
                             className="px-1 pt-2"
@@ -295,35 +410,34 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                         />
 
                         <div className="border-t border-line pt-4">
-                            {(needsInsertionOrder || needsPlatform) && (
-                                <div className="mb-4 space-y-2 px-1">
-                                    {needsInsertionOrder && (
-                                        <CheckBox
-                                            checked={terms}
-                                            onChange={setTerms}
-                                            label={
-                                                <>
-                                                    I have reviewed the booking details and terms.{" "}
-                                                    <Link href="/help#booking" className="underline underline-offset-2">
-                                                        Read booking and cancellation terms
-                                                    </Link>
-                                                </>
-                                            }
+                            {review && (
+                                <div className="mb-4 px-1">
+                                    <InsertionOrderPanel campaign={campaign} review={review} advertiser={advertiser} returnTo={payHref} onChanged={ready.reload} />
+                                </div>
+                            )}
+                            {needsPlatform && (
+                                <div className="mb-4 px-1">
+                                    {platformOpen ? (
+                                        <AgreementAccept
+                                            kind="ADVERTISER_PLATFORM"
+                                            intro="One agreement, covering everything you book on ADX — accepted once, before your first payment."
+                                            acceptLabel="Accept the agreement"
+                                            onAccepted={() => {
+                                                setPlatformOpen(false);
+                                                setEligibilityTick((t) => t + 1);
+                                            }}
+                                            onCancel={() => setPlatformOpen(false)}
                                         />
-                                    )}
-                                    {needsPlatform && (
-                                        <CheckBox
-                                            checked={platform}
-                                            onChange={setPlatform}
-                                            label={
-                                                <>
-                                                    I accept the ADX advertiser agreement.{" "}
-                                                    <Link href="/help#agreement" className="underline underline-offset-2">
-                                                        Read it
-                                                    </Link>
-                                                </>
-                                            }
-                                        />
+                                    ) : (
+                                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-white px-4 py-4">
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-semibold text-ink">ADX advertiser agreement</p>
+                                                <p className="mt-1 text-sm text-dim">Accept it once, before your first payment. It covers what you are buying and what happens if a site becomes unavailable.</p>
+                                            </div>
+                                            <button type="button" onClick={() => setPlatformOpen(true)} className={smallButton}>
+                                                Read and accept it
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
                             )}
@@ -335,13 +449,20 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                                             Billing details
                                         </Link>
                                     )}
-                                    {signing?.signingUrl && (
-                                        <a href={signing.signingUrl} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
-                                            Sign the insertion order ↗
-                                        </a>
-                                    )}
                                 </p>
                             )}
+                            {review && review.clashes.length > 0 && (
+                                <div className="mb-4 rounded-md border border-[#f3c1c1] bg-[#fdf2f2] px-3 py-3" data-testid="pay-clashes">
+                                    <p className="text-sm text-[#b42318]">
+                                        {review.clashes.map((c) => c.title).join(", ")} no longer {review.clashes.length === 1 ? "has" : "have"} a slot on these dates.{" "}
+                                        <Link href={stepHref(campaign.id, "spaces")} className="font-medium underline underline-offset-2">
+                                            Remove {review.clashes.length === 1 ? "it" : "them"} or change the dates
+                                        </Link>
+                                    </p>
+                                    <ClashList className="mt-3" clashes={review.clashes} length={review.days || flightDays(campaign.startDate, campaign.endDate)} quantityOf={(spotId) => review.lines.find((l) => l.spotId === spotId)?.quantity} campaignDates={{ from: campaign.startDate, to: campaign.endDate }} />
+                                </div>
+                            )}
+                            <AgeGate gate={age} className="mb-4" />
                             <p className="px-1 text-sm text-dim">
                                 Your artwork will be reviewed after payment.{" "}
                                 <Link href={stepHref(campaign.id, "review")} className="underline underline-offset-2">
@@ -357,13 +478,18 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                                         {breakdown ? "Hide price breakdown" : "Review price breakdown"}
                                     </button>
                                 </div>
+                                {method === "WALLET" && (
+                                    <button type="button" disabled={busy || !covers || !!blocked || !agreementsOk || review === null || review.clashes.length > 0 || age.blocked} onClick={() => void payFromWallet()} className={primaryButton}>
+                                        {busy ? "Please wait…" : feePaid ? `Pay the balance ${rupees(collecting)} from my wallet` : `Pay ${rupees(collecting)} from my wallet`}
+                                    </button>
+                                )}
                                 {method === "CARD" && (
-                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk} onClick={() => void continueWithCard()} className={primaryButton}>
+                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk || age.blocked} onClick={() => void continueWithCard()} className={primaryButton}>
                                         {busy ? "Please wait…" : feeDue ? `Pay ${rupees(collecting)} fee with card` : feePaid ? `Pay the balance ${rupees(collecting)} with card` : "Continue with card"}
                                     </button>
                                 )}
                                 {method === "UPI" && (
-                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk || !upiValid} onClick={() => void payWithUpi()} className={primaryButton}>
+                                    <button type="button" disabled={busy || !gateway || !!blocked || !agreementsOk || !upiValid || age.blocked} onClick={() => void payWithUpi()} className={primaryButton}>
                                         {busy ? "Opening…" : feeDue ? `Pay ${rupees(collecting)} fee with UPI` : feePaid ? `Pay the balance ${rupees(collecting)} with UPI` : `Pay ${rupees(collecting)} with UPI`}
                                     </button>
                                 )}
@@ -386,7 +512,7 @@ function Pay({ ready }: { ready: ReadyCampaign }) {
                                 <div className="mt-4 rounded-md border border-line bg-ground px-4 py-3">
                                     <p className="text-sm font-semibold text-ink">Not ready to pay in full?</p>
                                     <p className="mt-1 text-sm text-ink">{reservationOfferLine(offer)}</p>
-                                    <button type="button" onClick={() => void reserve()} disabled={busy} className={`${smallButton} mt-3`}>
+                                    <button type="button" onClick={() => void reserve()} disabled={busy || age.blocked} className={`${smallButton} mt-3`}>
                                         {busy ? "Please wait…" : `Reserve these spots for ${offer.holdHours} hours`}
                                     </button>
                                 </div>
@@ -451,7 +577,7 @@ function CardMarks() {
  * the BANK_TRANSFER intent carries the reference and the amount; the claim
  * is `POST /payments/:id/bank-transfer/submit`, and ops confirm it later.
  */
-function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpose, disabled, onBeforeIntent, onClaimed }: { campaignId: string; details: BankTransferDetails; checked: boolean; onSelect: () => void; amount: number; purpose?: PaymentPurpose; disabled: boolean; onBeforeIntent: () => Promise<void>; onClaimed: (payment: PaymentSummary) => void }) {
+function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpose, disabled, age, onBeforeIntent, onClaimed }: { campaignId: string; details: BankTransferDetails; checked: boolean; onSelect: () => void; amount: number; purpose?: PaymentPurpose; disabled: boolean; age: AgeGateControl; onBeforeIntent: () => Promise<void>; onClaimed: (payment: PaymentSummary) => void }) {
     const [intent, setIntent] = React.useState<PaymentIntent | null>(null);
     const [utr, setUtr] = React.useState("");
     const [paidOn, setPaidOn] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -461,7 +587,8 @@ function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpo
     const [copied, setCopied] = React.useState<string | null>(null);
 
     const reference = async () => {
-        if (busy || intent) return;
+        /* A bank transfer is an order too: the age gate (drawn by the page, beside its pay button) asks first. */
+        if (busy || intent || !age.ready(() => void reference())) return;
         setBusy(true);
         setError(null);
         try {
@@ -470,7 +597,8 @@ function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpo
             setIntent(answer);
             if (answer.bankTransfer?.amount) setPaid(String(Math.round(Number(answer.bankTransfer.amount))));
         } catch (caught) {
-            setError(notAvailableYet(caught) ? "Bank transfer is not available yet. Choose card or UPI." : messageOf(caught, "Could not prepare the transfer."));
+            /* The kill switch says nothing here: the page's own line replaces the row once the 503 lands. */
+            if (!age.caught(caught, () => void reference())) setError(isFeatureOff(caught, FLAG_PAYMENT_GATEWAYS) ? null : notAvailableYet(caught) ? "Bank transfer is not available yet. Choose card or UPI." : messageOf(caught, "Could not prepare the transfer."));
         } finally {
             setBusy(false);
         }
@@ -552,7 +680,7 @@ function BankTransferRow({ campaignId, details, checked, onSelect, amount, purpo
                             <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                             Please share the payment confirmation/UTR number after transfer for faster verification.
                         </p>
-                        {!referenceId && disabled && <p className="mt-2 text-xs text-dim">Tick the terms above to get your reference.</p>}
+                        {!referenceId && disabled && <p className="mt-2 text-xs text-dim">Accept the insertion order and the agreement above to get your reference.</p>}
                     </div>
                     {intent && (
                         <div className="mt-4">

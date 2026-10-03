@@ -1,6 +1,7 @@
 import { api, apiBlob, ApiError } from "@/lib/api-client";
 import type { TwoFactorStatus } from "@/services/auth";
 import type { ReservationFeeOffer, ReservationView } from "@/services/reservation";
+import { CAMPAIGN_CHIPS as FOUR_CHIPS, campaignChipStatuses, type CampaignAnalytics as FullAnalytics, type CancelOutcome } from "@/services/campaigns";
 
 /**
  * The advertiser workspace (DR 12 board 07) — everything the seven pages
@@ -119,6 +120,11 @@ export interface CampaignDetail {
     productName: string | null;
     goal: string | null;
     targetLocation: string | null;
+    /** Lot D (Q8): the markets, the first being `targetMarket`; above one the brief carries the owner's note. */
+    targetMarket?: string | null;
+    targetMarkets?: string[];
+    multiMarketWarning?: boolean;
+    trackingConfig?: Record<string, unknown> | null;
     city?: string | null;
     spotCount?: number;
     budget: string | null;
@@ -162,20 +168,8 @@ export interface Metric {
     basis: string;
 }
 
-export interface CampaignAnalytics {
-    campaignId: string;
-    daysElapsed: number;
-    daysTotal: number;
-    spend: { toDate: string; committed: string; budget: string | null; onTrack: boolean | null };
-    spotsLive: number;
-    spotsBooked: number;
-    reach: Metric;
-    scans: Metric;
-    clicks: Metric;
-    clickRate: Metric;
-    redemptions: Metric;
-    series: { day: string; spend: string; spotsLive: number; scans: number; clicks: number; estimatedReach: number | null }[];
-}
+/** The full per-campaign read — tiles, series, audience, interactions, by site — as `services/campaigns` types it. */
+export type CampaignAnalytics = FullAnalytics;
 
 /** One line of `GET /campaigns/:id/review` — the receipt's own arithmetic. */
 export interface ReviewLine {
@@ -490,6 +484,19 @@ export interface AdvertiserProfile {
     activatedAt: string | null;
 }
 
+/**
+ * The registered company name a billing form opens with (28 Sep 2026): the
+ * stored one; else, for a business or organisation, the name it was opened
+ * under on the side form — which is that same name, typed once already. Not
+ * the number a row carries until it is named, and never an individual's.
+ */
+export function companyNameOf(advertiser: Pick<AdvertiserProfile, "companyName" | "name" | "type" | "mobile">): string {
+    if (advertiser.companyName?.trim()) return advertiser.companyName;
+    if (advertiser.type === "INDIVIDUAL") return "";
+    const name = advertiser.name?.trim() ?? "";
+    return name && name !== advertiser.mobile ? name : "";
+}
+
 export interface AdvertiserProfilePatch {
     name?: string;
     email?: string;
@@ -646,8 +653,11 @@ export const advertiserWorkspace = {
     twoFactorStatus: () => api.get<TwoFactorStatus>("/auth/2fa/status"),
     /** DQ-1: the advertiser's answer to the desk's design quote; answers the campaign detail. */
     respondToDesignQuote: (id: string, decision: "ACCEPTED" | "DECLINED") => api.post<CampaignDetail>(`/campaigns/${encodeURIComponent(id)}/design-quote/respond`, { decision }),
-    /** The advertiser's own cancel: a draft or an unpaid campaign; a reserved one forfeits part of the fee. */
-    cancelCampaign: (id: string, reason: string) => api.post<{ released: boolean; refundNeeded: boolean }>(`/campaigns/${encodeURIComponent(id)}/cancel`, { reason }),
+    /** The advertiser's own cancel: a draft or an unpaid campaign, or (after payment) a scheduled or live one — released, or a refund recorded for finance; a reserved one forfeits part of the fee. */
+    cancelCampaign: (id: string, reason: string) => api.post<CancelOutcome>(`/campaigns/${encodeURIComponent(id)}/cancel`, { reason }),
+    /** QR-17: what still stands between the account and a booking — the set-up card walks PROFILE and AGREEMENT. */
+    eligibility: (advertiserId: string) => api.get<{ eligible: boolean; blockedBy: string[]; launchBlockedBy?: string[] }>(`/advertisers/${encodeURIComponent(advertiserId)}/eligibility`),
+    acceptPlatformAgreement: (advertiserId: string) => api.post<unknown>(`/advertisers/${encodeURIComponent(advertiserId)}/agreements/platform`, {}),
     preferences: () => api.get<NotificationPreference[]>("/notifications/preferences"),
     savePreferences: (rows: NotificationPreference[]) => api.put<unknown>("/notifications/preferences", rows),
 };
@@ -773,15 +783,12 @@ export function gstLabel(taxable: string | number, gst: string | number): string
 
 export type Tone = "neutral" | "info" | "success" | "warning" | "danger";
 
-/** The three chips on the Campaigns page, each the statuses it stands for. */
-export const CAMPAIGN_CHIPS: { value: "ALL" | "ACTIVE" | "COMPLETED"; label: string; statuses: readonly CampaignStatus[] }[] = [
-    { value: "ALL", label: "All campaigns", statuses: [] },
-    { value: "ACTIVE", label: "Active", statuses: ["PENDING_PAYMENT", "SCHEDULED", "LIVE", "PAUSED"] },
-    { value: "COMPLETED", label: "Completed", statuses: ["COMPLETED", "CANCELLED"] },
-];
+/** The four chips on the Campaigns page — All, Live, Drafts, Ended — as the app draws them (`services/campaigns`). */
+export const CAMPAIGN_CHIPS = FOUR_CHIPS;
 
+/** The statuses a chip sends; the chips from before the four (ACTIVE, COMPLETED) still land. */
 export function chipStatuses(chip: string | null | undefined): readonly CampaignStatus[] {
-    return CAMPAIGN_CHIPS.find((c) => c.value === chip)?.statuses ?? [];
+    return campaignChipStatuses(chip);
 }
 
 /** "3 campaigns · 1 draft" — the line under the Campaigns title, from the page's counts. */
@@ -857,7 +864,7 @@ export function campaignStatusLine(campaign: Pick<CampaignDetail, "status" | "st
         case "PENDING_PAYMENT":
             return "Your brief is complete. Pay to reserve the spaces and send your artwork for review.";
         case "SCHEDULED":
-            if (campaign.launchBlockedBy?.includes("KYC")) return `Your payment is complete. Verify your account in the ADX app so the campaign can go live on ${starts}.`;
+            if (campaign.launchBlockedBy?.includes("KYC")) return `Your payment is complete. Verify your identity so the campaign can go live on ${starts} — it takes a few minutes.`;
             if (artworkInReview(campaign.creatives ?? [])) return `Your payment is complete. Publishers are reviewing the submitted artwork before the campaign starts on ${starts}.`;
             return `Your payment is complete and the artwork is approved. The campaign starts on ${starts}.`;
         case "LIVE":

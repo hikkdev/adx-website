@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import { areaSqFt, isDigitalMediaType, matchedSizeClass, PRICING_UNITS, ratePerDayFrom, type ContentStance } from "@/services/listing-editor";
-import { CheckRow, Field, GroupTitle, Note, Row, SectionLabel, SelectField } from "./fields";
-import { ADVANCE_BOOKING, BOOKING_PERIODS, CANCELLATION_NOTICE, VISIBILITY_WINDOWS, type ListingForm } from "./form-model";
+import { SITE_LABEL } from "@/services/listing-site-questions";
+import { CheckRow, Field, GroupTitle, Note, Row, SectionLabel, SelectField, SwitchRow } from "./fields";
+import { InstantBookingSwitch } from "./instant-booking";
+import { ADVANCE_BOOKING, BOOKING_PERIODS, CANCELLATION_NOTICE, MAX_BOOKING_PERIODS, SEASONAL_VARIATIONS, VISIBILITY_WINDOWS, type ListingForm } from "./form-model";
 import { PriceIndicatorLine } from "./price-indicator";
 import type { StepProps } from "./steps-choose";
 import { DropZone, FileRow } from "./uploads";
@@ -13,39 +15,55 @@ const YEAR_ROUND = [
     { value: "no", label: "No · from a date or by season" },
 ];
 
-export const SEASONAL_VARIATIONS = [
-    { value: "none", label: "No seasonal change" },
-    { value: "festive", label: "Higher in the festive season (Oct – Dec)" },
-    { value: "wedding", label: "Higher in the wedding season" },
-    { value: "summer", label: "Lower in summer" },
-    { value: "monsoon", label: "Lower in the monsoon" },
-    { value: "events", label: "Premium in event weeks" },
-    { value: "other", label: "Other — noted on the card" },
-];
-
 /** 15 · Availability and booking terms (5204:78822). */
 export function TermsStep({ form, set }: StepProps) {
     return (
         <div className="space-y-2.5">
             <SectionLabel>Availability</SectionLabel>
             <SelectField label="Available year-round?" value={form.availableYearRound} onChange={(availableYearRound) => set({ availableYearRound: availableYearRound as ListingForm["availableYearRound"] })} options={YEAR_ROUND} placeholder="Choose" />
-            <SelectField label="Visibility window" value={form.visibilityWindow} onChange={(visibilityWindow) => set({ visibilityWindow })} options={VISIBILITY_WINDOWS.map((w) => ({ value: w.key, label: w.label }))} placeholder="Choose" />
+            <SwitchRow label={SITE_LABEL.availableNow} checked={form.availableNow} onChange={(availableNow) => set({ availableNow })} />
+            <HoursSelect label="Visibility window" form={form} set={set} placeholder="Choose" />
+            <InstantBookingSwitch value={form.instantBooking} onChange={(instantBooking) => set({ instantBooking })} className="mt-2" />
 
             <SectionLabel className="pt-5">Booking terms</SectionLabel>
             <SelectField label="Minimum booking period" value={form.minBookingDays} onChange={(minBookingDays) => set({ minBookingDays })} options={BOOKING_PERIODS} placeholder="Choose" />
-            <SelectField label="Maximum booking period" value={form.maxBookingDays} onChange={(maxBookingDays) => set({ maxBookingDays })} options={[...BOOKING_PERIODS.slice(2), { value: "180", label: "180 days" }, { value: "365", label: "A year" }, { value: "0", label: "No maximum" }]} placeholder="Choose" />
+            <SelectField label="Maximum booking period" value={form.maxBookingDays} onChange={(maxBookingDays) => set({ maxBookingDays })} options={MAX_BOOKING_PERIODS} placeholder="Choose" />
             <SelectField label="Advance booking required" value={form.advanceBookingDays} onChange={(advanceBookingDays) => set({ advanceBookingDays })} options={ADVANCE_BOOKING} placeholder="Choose" />
 
             <SectionLabel className="pt-5">Cancellation</SectionLabel>
             <SelectField label="Cancellation notice" value={form.cancellationNotice} onChange={(cancellationNotice) => set({ cancellationNotice })} options={CANCELLATION_NOTICE} placeholder="Choose" />
 
-            <Note className="pt-2">These are your listing terms. They are shown to advertisers before booking. The maximum period, advance notice and cancellation terms are kept with your draft for ADX to apply at booking.</Note>
+            <Note className="pt-2">These are your listing terms. They are saved with the listing and shown to advertisers before booking.</Note>
         </div>
     );
 }
 
-/** The loop a digital screen carries (Lot G): 1..24, stepped, under the rate. */
-function SlotsStepper({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+/** The select's value for hours none of the five windows name. */
+const CUSTOM_HOURS = "custom";
+
+/**
+ * The five visibility windows — and, when the listing or a phone's draft
+ * holds hours none of them name, those hours as a choice of their own, so
+ * they are seen and kept rather than dropped (listing-data-gaps lot).
+ */
+function HoursSelect({ label, form, set, placeholder }: Pick<StepProps, "form" | "set"> & { label: string; placeholder: string }) {
+    const custom = !form.visibilityWindow && form.customHours ? form.customHours : null;
+    return (
+        <SelectField
+            label={label}
+            value={form.visibilityWindow || (custom ? CUSTOM_HOURS : "")}
+            onChange={(next) => {
+                if (next === CUSTOM_HOURS) return;
+                set({ visibilityWindow: next, customHours: next ? null : form.customHours });
+            }}
+            options={[...VISIBILITY_WINDOWS.map((w) => ({ value: w.key, label: w.label })), ...(custom ? [{ value: CUSTOM_HOURS, label: `${custom.from} – ${custom.to}` }] : [])]}
+            placeholder={placeholder}
+        />
+    );
+}
+
+/** The loop a digital screen carries (Lot G): 1..24, stepped, under the rate. FL-1: also drawn under the flow's `base_price`. */
+export function SlotsStepper({ value, onChange }: { value: number; onChange: (next: number) => void }) {
     const put = (next: number) => onChange(Math.min(24, Math.max(1, next)));
     return (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-ground px-3 py-2.5">
@@ -86,7 +104,7 @@ export function PricingStep({ form, set, catalogue, listingId }: StepProps & { l
             </Row>
 
             <GroupTitle className="pt-4">Availability</GroupTitle>
-            <SelectField label="Visibility hours" value={form.visibilityWindow} onChange={(visibilityWindow) => set({ visibilityWindow })} options={VISIBILITY_WINDOWS.map((w) => ({ value: w.key, label: w.label }))} placeholder="24 hours" />
+            <HoursSelect label="Visibility hours" form={form} set={set} placeholder="24 hours" />
             <Field label="Peak period note" value={form.peakPeriodNote} onChange={(peakPeriodNote) => set({ peakPeriodNote })} placeholder="Add peak period information" />
             <Note className="pt-2">Your rate card comes next. Include any separate printing or installation charges in the commercial terms.</Note>
         </div>
@@ -105,12 +123,13 @@ export function RateCardStep({ form, set }: StepProps) {
             <Field label="Validity start" type="date" value={form.rateCardValidFrom} onChange={(rateCardValidFrom) => set({ rateCardValidFrom })} />
             <Field label="Validity end" type="date" value={form.rateCardValidTo} onChange={(rateCardValidTo) => set({ rateCardValidTo })} />
             <SelectField label="Seasonal variation" value={form.rateCardSeasonal} onChange={(rateCardSeasonal) => set({ rateCardSeasonal })} options={SEASONAL_VARIATIONS} placeholder="Add any seasonal change" />
-            <Note className="pt-2">{form.category === "MEDIA" ? "Required for media listings." : "Optional commercial evidence for other spaces."} The card itself is filed with the listing; its dates and seasonal note are kept with your draft for ADX's review.</Note>
+            <Note className="pt-2">{form.category === "MEDIA" ? "Required for media listings." : "Optional commercial evidence for other spaces."} The card, its validity dates and the seasonal note are saved with the listing.</Note>
         </div>
     );
 }
 
-const STANCES: { value: ContentStance; label: string }[] = [
+/** The three answers a restricted category takes, in the frame's words. FL-1: shared with the flow's `content-stance` field. */
+export const STANCES: { value: ContentStance; label: string }[] = [
     { value: "ALLOWED", label: "Accepted" },
     { value: "REQUIRES_APPROVAL", label: "Requires owner approval" },
     { value: "NOT_ALLOWED", label: "Not accepted" },

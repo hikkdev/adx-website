@@ -3,12 +3,13 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { SelectButton } from "@/components/planner/fields";
+import { ClashHint } from "@/components/booking/clash-hint";
+import { Chip, SelectButton } from "@/components/planner/fields";
 import { InlineError, StepActions, TaskCard } from "@/components/planner/planner-shell";
 import type { StepProps } from "@/components/planner/planner-step";
 import { messageOf } from "@/lib/api-client";
 import { rupees } from "@/services/browse";
-import { formatDate, joinNames, mediaSubtotal, PERSONAS, perWeek, plannerHref, plannerService, STEP_META, targetSummary, type InventoryMatch } from "@/services/planner";
+import { contributionLabel, flightDays, formatDate, INVENTORY_SORTS, joinNames, mediaSubtotal, PERSONAS, perWeek, plannerHref, plannerService, STEP_META, targetSummary, type InventoryMatch, type InventorySort } from "@/services/planner";
 
 /** The chip on a shortlist card: the venue or media type, as the frame prints "BILLBOARD" / "MALL". */
 function chipOf(match: InventoryMatch): string {
@@ -34,9 +35,15 @@ function areaOf(match: InventoryMatch): string {
  * (`GET /campaigns/:id/inventory`), two cards to a row, each added or
  * removed with one press; the chosen ones go on the campaign
  * (`PUT /campaigns/:id/spots`) with "Continue with selected spaces".
+ * As in the app, the shortlist sorts three ways (best match, lowest rate,
+ * most reach) and each card says why it was offered — the server's
+ * reasons, each with its share of the score — because "94% match" is a
+ * claim somebody is about to spend on.
  */
 export function SpacesStep({ campaign, replace }: StepProps) {
     const router = useRouter();
+    const [sort, setSort] = React.useState<InventorySort>("BEST_MATCH");
+    const [why, setWhy] = React.useState<string | null>(null);
     const [result, setResult] = React.useState<{ key: string; rows: InventoryMatch[] | null; error: string | null }>({ key: "", rows: null, error: null });
     const [selected, setSelected] = React.useState<Map<string, InventoryMatch>>(() => {
         const held = new Map<string, InventoryMatch>();
@@ -69,21 +76,23 @@ export function SpacesStep({ campaign, replace }: StepProps) {
     React.useEffect(() => {
         let cancelled = false;
         plannerService
-            .inventory(campaign.id, { sort: "BEST_MATCH", limit: 50 })
+            .inventory(campaign.id, { sort, limit: 50 })
             .then((rows) => {
-                if (!cancelled) setResult({ key: campaign.id, rows, error: null });
+                if (!cancelled) setResult({ key: `${campaign.id}:${sort}`, rows, error: null });
             })
             .catch((caught: unknown) => {
-                if (!cancelled) setResult({ key: campaign.id, rows: null, error: messageOf(caught, "Could not read the matching spaces.") });
+                if (!cancelled) setResult({ key: `${campaign.id}:${sort}`, rows: null, error: messageOf(caught, "Could not read the matching spaces.") });
             });
         return () => {
             cancelled = true;
         };
-    }, [campaign.id]);
+    }, [campaign.id, sort]);
+
+    const current = result.key === `${campaign.id}:${sort}` ? result : { key: "", rows: null, error: null };
 
     /* The shortlist leaves out what the campaign already holds; draw those first, marked selected. */
-    const held = [...selected.values()].filter((match) => !(result.rows ?? []).some((row) => row.listingId === match.listingId));
-    const rows = [...held, ...(result.rows ?? [])];
+    const held = [...selected.values()].filter((match) => !(current.rows ?? []).some((row) => row.listingId === match.listingId));
+    const rows = [...held, ...(current.rows ?? [])];
     const chosen = [...selected.values()];
     const subtotal = mediaSubtotal(chosen);
     const persona = PERSONAS.find((p) => p.id === campaign.persona)?.title ?? "Audience not set";
@@ -130,13 +139,19 @@ export function SpacesStep({ campaign, replace }: StepProps) {
                     </p>
                 </div>
 
-                {result.rows === null && !result.error && <p className="mt-6 text-sm text-dim">Matching spaces to your brief…</p>}
-                {result.error && (
+                <div className="mt-6 flex flex-wrap items-center gap-2" role="group" aria-label="Sort the spaces">
+                    <span className="mr-1 text-sm text-dim">Sort by</span>
+                    {INVENTORY_SORTS.map((option) => (
+                        <Chip key={option.id} label={option.title} on={sort === option.id} onClick={() => setSort(option.id)} />
+                    ))}
+                </div>
+                {current.rows === null && !current.error && <p className="mt-6 text-sm text-dim">Matching spaces to your brief…</p>}
+                {current.error && (
                     <div className="mt-6">
-                        <InlineError message={result.error} />
+                        <InlineError message={current.error} />
                     </div>
                 )}
-                {result.rows && rows.length === 0 && (
+                {current.rows && rows.length === 0 && (
                     <div className="mt-6 rounded-lg border border-line px-5 py-6">
                         <p className="text-sm font-medium text-ink">No space matches this brief yet</p>
                         <p className="mt-1 text-sm text-dim">Widen the radius or choose another market, or browse every space and add from there.</p>
@@ -159,18 +174,41 @@ export function SpacesStep({ campaign, replace }: StepProps) {
                                     </div>
                                     <div className="px-2.5 pb-2 pt-3.5">
                                         <p className="text-sm font-semibold text-ink">{match.title}</p>
+                                        {match.clashes && <ClashHint className="mt-1" listingId={match.listingId} length={flightDays(campaign.startDate, campaign.endDate)} campaignDates={{ from: campaign.startDate, to: campaign.endDate }} />}
                                         <div className="mt-2 flex items-center gap-2">
                                             <span className="rounded bg-brand-soft px-2 py-1 text-xs font-semibold text-brand-bright">{chipOf(match)}</span>
                                             <span className="text-xs text-dim">{areaOf(match)}</span>
                                         </div>
-                                        <p className="mt-2.5 text-xs text-dim">{formatLine(match)}</p>
+                                        <p className="mt-2.5 text-xs text-dim">
+                                            {formatLine(match)}
+                                            {match.distanceMeters !== null ? ` · ${(match.distanceMeters / 1000).toFixed(1)} km away` : ""}
+                                        </p>
                                         <div className="mt-2.5 flex items-center justify-between">
                                             <p className="text-base font-semibold text-ink">{perWeek(match.ratePerDay)}</p>
                                             <SelectButton selected={on} title={match.title} onClick={() => toggle(match)} />
                                         </div>
-                                        <Link href={`/spaces/${encodeURIComponent(match.listingId)}`} className="mt-2.5 inline-block text-xs font-medium text-ink underline underline-offset-2 hover:text-brand">
-                                            View full listing
-                                        </Link>
+                                        <div className="mt-2.5 flex flex-wrap items-center gap-4">
+                                            {match.reasons.length > 0 && (
+                                                <button type="button" onClick={() => setWhy(why === match.listingId ? null : match.listingId)} aria-expanded={why === match.listingId} className="text-xs font-medium text-ink underline underline-offset-2 hover:text-brand">
+                                                    {why === match.listingId ? "Hide why" : "Why this space?"}
+                                                </button>
+                                            )}
+                                            <Link href={`/spaces/${encodeURIComponent(match.listingId)}`} className="text-xs font-medium text-ink underline underline-offset-2 hover:text-brand">
+                                                View full listing
+                                            </Link>
+                                        </div>
+                                        {why === match.listingId && (
+                                            <ul className="mt-3 space-y-2 rounded-lg bg-ground px-3 py-3">
+                                                {match.reasons.map((reason) => (
+                                                    <li key={reason.label} className="flex items-start gap-3 text-xs">
+                                                        <span className="w-20 shrink-0 font-semibold text-ink">{reason.label}</span>
+                                                        <span className="min-w-0 flex-1 text-dim">{reason.detail}</span>
+                                                        <span className="shrink-0 font-semibold tabular-nums text-success">{contributionLabel(reason.contribution)}</span>
+                                                    </li>
+                                                ))}
+                                                {match.estimatedDailyFootfall === null && <li className="text-xs text-dim">This publisher has not stated a daily footfall, so no reach estimate comes from this space.</li>}
+                                            </ul>
+                                        )}
                                     </div>
                                 </li>
                             );

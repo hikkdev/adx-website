@@ -4,7 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { PageHeading } from "@/components/workspace/page-heading";
 import { btnPrimary, Cell, ErrorPanel, LoadingLine, StatusChip, TablePanel, Td, Th, useAsync } from "@/components/advertiser/bits";
-import { advertiserWorkspace, requestsSummary, shortDate, ticketCampaignId, ticketReference, ticketStatusLabel, ticketTopic, type CampaignRow, type SupportTicket } from "@/services/advertiser-workspace";
+import { advertiserWorkspace, requestsSummary, shortDate, ticketCampaignId, ticketReference, ticketStatusLabel, type CampaignRow, type SupportTicket } from "@/services/advertiser-workspace";
+import { requestTopicOf } from "@/components/support/request-topics";
 
 /**
  * DR 12 · 07 · 10 · My requests (5204:74323): the advertiser's support
@@ -89,8 +90,8 @@ export default function RequestsPage() {
 
 function RequestLine({ ticket, campaign }: { ticket: SupportTicket; campaign?: CampaignRow }) {
     const status = ticketStatusLabel(ticket.status);
-    const topic = ticketTopic(ticket);
-    const hint = ticket.status === "CLOSED" ? "Resolved by ADX Support" : ticket.status === "WAITING" ? "ADX Support is waiting for your reply" : topic ? topic.label : "With ADX Support";
+    const topic = requestTopicOf(ticket);
+    const hint = ticket.status === "CLOSED" ? "Resolved by ADX Support" : ticket.status === "WAITING" ? "ADX Support is waiting for your reply" : ticket.channel === "LIVE_CHAT" ? "Live chat" : ticket.kind === "FEEDBACK" ? "Feedback" : topic ? topic.label : "With ADX Support";
     return (
         <tr className="border-t border-line">
             <Td>

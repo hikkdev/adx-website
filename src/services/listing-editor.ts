@@ -13,7 +13,8 @@ export type ListingCategory = "INDOOR" | "OUTDOOR" | "TRANSIT" | "MEDIA";
 export type PricingUnit = "PER_DAY" | "PER_WEEK" | "PER_MONTH" | "PER_SQFT_PER_DAY" | "PER_SQFT_PER_MONTH";
 export type RightsBasis = "OWNED" | "LEASED" | "LICENSED" | "PERMIT";
 export type ContentStance = "ALLOWED" | "REQUIRES_APPROVAL" | "NOT_ALLOWED" | "PROHIBITED";
-export type ListingDocumentKind = "DISPLAY_AGREEMENT" | "OWNER_NOC" | "ADDRESS_PROOF" | "MUNICIPAL_PERMIT" | "VEHICLE_RC" | "OTHER";
+/** LF-2 (28 Sep 2026): AUDIENCE_RATING (a BARC / TAM rating sheet) and FOOTFALL_AUDIT (a footfall audit report) — the audience evidence, filed like any paper. */
+export type ListingDocumentKind = "DISPLAY_AGREEMENT" | "OWNER_NOC" | "ADDRESS_PROOF" | "MUNICIPAL_PERMIT" | "VEHICLE_RC" | "AUDIENCE_RATING" | "FOOTFALL_AUDIT" | "OTHER";
 export type ListingStatus =
     | "UNCLAIMED"
     | "DRAFT"
@@ -86,6 +87,9 @@ export interface ListingPhoto {
     id?: string;
     url: string;
     type: string;
+    /** The listing-data-gaps lot: the upload row behind the photograph, and when it was taken when that is known. */
+    uploadedFileId?: string | null;
+    takenAt?: string | null;
     createdAt?: string;
 }
 
@@ -111,6 +115,8 @@ export interface Listing {
     areaSqFt: string | null;
     minBookingDays: number | null;
     availableNow: boolean;
+    /** LF-2: the publisher's "Available year-round?" — not `availableNow`. */
+    availableYearRound?: boolean | null;
     availableFrom: string | null;
     availableHoursFrom: string | null;
     availableHoursTo: string | null;
@@ -140,8 +146,51 @@ export interface Listing {
     rightsBasis?: RightsBasis | null;
     rightsValidUntil?: string | null;
     rightsLapsedAt?: string | null;
+    /** QR-26: a PERMANENT structure is verified again every 180 days, a REMOVABLE one every 90. */
+    removability?: "PERMANENT" | "REMOVABLE" | null;
     verifiedAt?: string | null;
     verificationExpiresAt?: string | null;
+    /** When the daily rate was last set — by the publisher, or by taking ADX's suggestion. */
+    ratePerDaySetAt?: string | null;
+    /*
+     * LF-2 (28 Sep 2026): the listing flow's restored questions, as the row
+     * holds them — stated by the publisher, shown to the advertiser, priced on
+     * by nothing. The dates come back as instants (`@db.Date`, midnight UTC).
+     */
+    installationByAdx?: boolean | null;
+    vehicleModel?: string | null;
+    broadcastLanguage?: string | null;
+    contentFormat?: string | null;
+    /** The flow's profile `{ ageBand, genderSplit, urbanRural, secProfile, incomeBracket, occupation }` (words), or older shares. */
+    audienceDemographics?: Record<string, string | number> | { label: string; share: number }[] | null;
+    maxBookingDays?: number | null;
+    advanceBookingDays?: number | null;
+    /** FLEXIBLE (free up to 48 hours before), NOTICE (`cancellationNoticeDays` ahead) or NONE (no cancellation once confirmed). */
+    cancellationPolicy?: "FLEXIBLE" | "NOTICE" | "NONE" | string | null;
+    cancellationNoticeDays?: number | null;
+    rateCardValidFrom?: string | null;
+    rateCardValidTo?: string | null;
+    seasonalVariationNote?: string | null;
+    /*
+     * The listing-data-gaps lot (3 Oct 2026): the site questions every form
+     * now asks (codes — `listing-site-questions.ts` holds the words), and
+     * the answers that used to be thrown away.
+     */
+    widthPx?: number | null;
+    heightPx?: number | null;
+    vehicleType?: string | null;
+    /** A media outlet's reach in words — its own column; `city` stays the city. */
+    coverage?: string | null;
+    /** How close the pin is, in metres, when a GPS fix placed it. */
+    locationAccuracyM?: number | null;
+    /** The transit operating hours, kept beside the visibility window (`availableHours*`). */
+    operatingHoursFrom?: string | null;
+    operatingHoursTo?: string | null;
+    termsAcceptedAt?: string | null;
+    termsVersion?: string | null;
+    ownershipDeclaredAt?: string | null;
+    documentWaivers?: { kind: string; reason?: string | null; at: string }[] | null;
+    extraAnswers?: { key: string; label: string; value: unknown }[] | null;
     createdAt: string;
     updatedAt?: string;
 }
@@ -218,6 +267,91 @@ export interface SuggestedRateAnswer {
     currentRatePerDay: string | null;
     offer: { base: string; ratePerDay: string; compoundMultiplier: string; cappedOut: boolean; applied: SuggestedRateFactor[] };
     differs: boolean;
+}
+
+/**
+ * Lot E (Q97): the live price case on a listing. PENDING or APPROVED;
+ * `source` says who raised it — the publisher asking for the price to be
+ * signed off (PUBLISH_REQUEST) or a revised card moving the floor over a live
+ * listing (CARD_REVISION), whose clock is `graceUntil`.
+ */
+export interface PriceCase {
+    id: string;
+    status: "PENDING" | "APPROVED" | "REJECTED" | string;
+    source: "PUBLISH_REQUEST" | "CARD_REVISION" | string;
+    graceUntil: string | null;
+    /** E7-2: the rejection is held because a booking is running on the listing. */
+    heldByRunningOrder: boolean;
+}
+
+/** `GET /rate-cards/gate/:listingId` — E11-1's `gateView`: the verdict, the floor of the card in force, the shortfall, the case. */
+export interface RateGateVerdict {
+    state: "NOT_COVERED" | "OK" | "BELOW_FLOOR" | "APPROVED_BELOW_FLOOR" | "AWAITING_APPROVAL";
+    belowFloor: boolean;
+    floorRatePerDay: string | null;
+    shortfall: string | null;
+    case: PriceCase | null;
+}
+
+/* ── Re-verification (QR-26, `/supply/listings/:id/verifications`) ─────── */
+
+export interface ListingVerification {
+    id: string;
+    type: string;
+    status: "SUBMITTED" | "ACCEPTED" | "REJECTED";
+    capturedAt: string;
+    rejectionReason: string | null;
+}
+
+/* ── The AI description draft (`/ai/listing-description*`) ─────────────── */
+
+export interface DescriptionQuota {
+    used: number;
+    quota: number;
+    /** Whether this publisher is on the higher allowance. */
+    paid: boolean;
+    /** False when no provider is configured — the button is not offered at all. */
+    available: boolean;
+}
+
+export interface DescriptionDraft {
+    text: string;
+    used: number;
+    quota: number;
+}
+
+/** The facts the model is given. All optional: a half-filled form still drafts. */
+export interface DescriptionContext {
+    title?: string;
+    venueType?: string;
+    mediaType?: string;
+    placement?: string;
+    city?: string;
+    address?: string;
+    widthFt?: string;
+    heightFt?: string;
+    material?: string;
+    targetAudience?: string;
+    footfallNote?: string;
+    uniqueSellingPoint?: string;
+}
+
+/** Whose allowance a draft counts against: the wizard's own key before the listing exists, the listing after. */
+export type DescriptionBucket = { draftKey: string } | { listingId: string };
+
+/* ── A city's stage (Lot V, `GET /app/geo/resolve?name=`) ──────────────── */
+
+export type CityStage = "PLANNED" | "SEEDING" | "LAUNCHED" | "PAUSED" | "WITHDRAWN" | string;
+
+export interface CityResolution {
+    name: string;
+    resolved: boolean;
+    slug: string | null;
+    city: string | null;
+    state: string | null;
+    stage: CityStage | null;
+    switches: { supplyIntake?: boolean; publishing?: boolean; demand?: boolean; [key: string]: boolean | undefined };
+    comingSoon: boolean;
 }
 
 /* ── Vehicles (VH-3 / AG-4) ────────────────────────────────────────────── */
@@ -320,6 +454,8 @@ export interface PublisherProfile {
     address?: string | null;
     city?: string | null;
     state?: string | null;
+    /** The six-digit PIN (1 Oct 2026). */
+    postalCode?: string | null;
     gstin?: string | null;
     contactName?: string | null;
     contactMobile?: string | null;
@@ -347,6 +483,63 @@ export interface PublisherKyc {
 
 const enc = encodeURIComponent;
 
+/**
+ * The listing-data-gaps lot's columns (3 Oct 2026). The backend learns them
+ * in the same lot; a server that has not yet ignores keys it does not know,
+ * and one that refuses them by name (`VALIDATION_ERROR`, the key in its
+ * field errors or an "Unrecognized key" line) gets the request once more
+ * without them — the listing is never lost to a column the server lacks.
+ */
+export const LISTING_GAP_KEYS: readonly string[] = [
+    "estimatedDailyFootfall",
+    "trafficGrade",
+    "visibility",
+    "elevation",
+    "widthPx",
+    "heightPx",
+    "vehicleType",
+    "availableNow",
+    "coverage",
+    "locationAccuracyM",
+    "operatingHoursFrom",
+    "operatingHoursTo",
+    "termsAccepted",
+    "termsVersion",
+    "ownershipDeclared",
+    "documentWaivers",
+    "extraAnswers",
+];
+
+/** The lot's keys the server named in a 400, or none. */
+export function refusedGapKeys(caught: unknown, body: Record<string, unknown>): string[] {
+    if (!(caught instanceof ApiError) || caught.status !== 400 || caught.code !== "VALIDATION_ERROR") return [];
+    const details = (caught.details ?? {}) as { fieldErrors?: Record<string, unknown>; formErrors?: unknown };
+    const named = new Set(Object.keys(details.fieldErrors ?? {}));
+    const lines = [caught.message, ...(Array.isArray(details.formErrors) ? details.formErrors : [])].filter((l): l is string => typeof l === "string");
+    for (const line of lines) if (/unrecogni[sz]ed key/i.test(line)) for (const key of LISTING_GAP_KEYS) if (line.includes(key)) named.add(key);
+    /* A photograph's two new keys are refused inside `photos`. */
+    if (named.has("photos") && Array.isArray(body.photos) && body.photos.some((p) => p && typeof p === "object" && ("uploadedFileId" in p || "takenAt" in p))) named.add("photos.meta");
+    return [...named].filter((key) => (LISTING_GAP_KEYS.includes(key) && key in body) || key === "photos.meta");
+}
+
+/** The body without the keys a server refused. */
+export function withoutGapKeys(body: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+    const next: Record<string, unknown> = { ...body };
+    for (const key of keys) delete next[key];
+    if (keys.includes("photos.meta") && Array.isArray(next.photos)) next.photos = next.photos.map((p) => ({ url: (p as { url: string }).url, type: (p as { type: string }).type }));
+    return next;
+}
+
+async function tolerant<T>(send: (body: Record<string, unknown>) => Promise<T>, body: Record<string, unknown>): Promise<T> {
+    try {
+        return await send(body);
+    } catch (caught) {
+        const refused = refusedGapKeys(caught, body);
+        if (refused.length === 0) throw caught;
+        return send(withoutGapKeys(body, refused));
+    }
+}
+
 export const listingEditorService = {
     /* Catalogue */
     catalogue: async (): Promise<Catalogue> => {
@@ -367,8 +560,8 @@ export const listingEditorService = {
     deleteDraft: (id: string) => api.delete<unknown>(`/listings/drafts/${enc(id)}`),
 
     /* The listing itself */
-    create: (body: Record<string, unknown>) => api.post<Listing>("/listings", body),
-    update: (listingId: string, patch: Record<string, unknown>) => api.patch<Listing>(`/listings/${enc(listingId)}`, patch),
+    create: (body: Record<string, unknown>) => tolerant((b) => api.post<Listing>("/listings", b), body),
+    update: (listingId: string, patch: Record<string, unknown>) => tolerant((b) => api.patch<Listing>(`/listings/${enc(listingId)}`, b), patch),
     submit: (listingId: string) => api.post<Listing>(`/listings/${enc(listingId)}/submit`),
     contentRules: (listingId: string) => api.get<{ contentCategoryId: string; stance: ContentStance }[]>(`/listings/${enc(listingId)}/content-rules`),
     audience: (listingId: string) => api.get<ListingAudience>(`/listings/${enc(listingId)}/audience`),
@@ -397,6 +590,20 @@ export const listingEditorService = {
         api.post<PriceIndicator>("/pricing/evaluate", body),
     suggestedRate: (listingId: string) => api.get<SuggestedRateAnswer>(`/listings/me/${enc(listingId)}/suggested-rate`),
     acceptSuggestedRate: (listingId: string) => api.post<Listing>(`/listings/me/${enc(listingId)}/accept-suggested-rate`),
+    /** Lot E: why a listing will not go live, or what a revised card has done to it. */
+    rateGate: (listingId: string) => api.get<RateGateVerdict>(`/rate-cards/gate/${enc(listingId)}`),
+
+    /* Re-verification — read only here: a new one is a photograph taken at the spot, in the app. */
+    verifications: (listingId: string) => api.get<ListingVerification[]>(`/supply/listings/${enc(listingId)}/verifications`),
+
+    /* The AI description draft */
+    descriptionQuota: (bucket: DescriptionBucket) =>
+        api.get<DescriptionQuota>(`/ai/listing-description/quota?${"listingId" in bucket ? `listingId=${enc(bucket.listingId)}` : `draftKey=${enc(bucket.draftKey)}`}`),
+    /** `current` is what is in the box now: the server refuses to write over words already there. */
+    generateDescription: (bucket: DescriptionBucket, current: string, context: DescriptionContext) => api.post<DescriptionDraft>("/ai/listing-description", { ...bucket, current, context }),
+
+    /* The stage ADX is at in a city — what it means for a new listing there. */
+    resolveCity: (name: string) => api.get<CityResolution>(`/app/geo/resolve?name=${enc(name.trim())}`),
 
     /* Vehicles */
     checkVehicleRc: (vehicleNumber: string) => api.post<VehicleRcCheck>("/listings/vehicle-rc/check", { vehicleNumber }),
@@ -731,6 +938,32 @@ export function requestedUpdatesOf(reason: string | null | undefined): Requested
 export function countWord(n: number): string {
     const words = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
     return words[n] ?? String(n);
+}
+
+/**
+ * The AI allowance's bucket for a listing not created yet: the saved draft's
+ * id when there is one (so a reload keeps the same allowance), else a key
+ * made here. The server takes 8–64 letters, digits, dashes or underscores.
+ */
+export function descriptionDraftKey(seed: string | null | undefined, random: () => string = () => Math.random().toString(36).slice(2)): string {
+    const cleaned = (seed ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+    if (cleaned.length >= 8) return cleaned;
+    return `w${random()}${Date.now().toString(36)}`.replace(/[^A-Za-z0-9_-]/g, "").padEnd(8, "0").slice(0, 64);
+}
+
+/**
+ * Lot V: what the city's stage means for this listing, said on the review
+ * step before the submit rather than by the server after it. A PAUSED or
+ * WITHDRAWN city takes nothing new (the create refuses CITY_NOT_OPEN); a
+ * SEEDING one lists now and publishes the day it launches. A town the
+ * catalogue lacks, or a read that failed, says nothing.
+ */
+export function cityStageNote(resolution: CityResolution | null | undefined, typed: string): { tone: "warning" | "info"; text: string } | null {
+    if (!resolution || !resolution.resolved) return null;
+    const city = resolution.city ?? typed.trim();
+    if (resolution.switches.supplyIntake === false) return { tone: "warning", text: `ADX is not taking new listings in ${city} right now.` };
+    if (resolution.stage === "SEEDING") return { tone: "info", text: `Listings go live when ${city} launches. ADX is gathering spaces there now — this one is reviewed and verified as usual, and published the day the city opens.` };
+    return null;
 }
 
 /** True for the 404 the two contracts still being built answer, so a control can say "not available yet". */

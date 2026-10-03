@@ -7,7 +7,8 @@ import { AtSign, Phone } from "lucide-react";
 import { toast } from "sonner";
 import { AuthCard, AuthTitle, primaryButton } from "@/components/auth/auth-card";
 import { FacebookButton } from "@/components/auth/facebook-button";
-import { GoogleButton, hasGoogleSignIn } from "@/components/auth/google-button";
+import { GoogleButton } from "@/components/auth/google-button";
+import { useProviderIds } from "@/components/auth/use-providers";
 import { useAuth, type DoorOutcome } from "@/lib/auth";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { challengeHref, destinationFor, looksLikeEmail, normaliseEmail, normaliseMobile, otpFailure, safeNext, signupHref } from "@/services/auth";
@@ -26,13 +27,19 @@ type Door = "email" | "mobile";
  * is asked next. G-2 and FB-1: Google and Facebook are doors too — a known
  * address signs in, a new one goes to the phone step with the proof of the
  * email. 2FA-A: an account with an authenticator answers it on `/verify-2fa`.
- * Facebook is drawn disabled, as the frame draws it, until the app id is set.
+ * A provider button is drawn only when `GET /auth/providers` (or the site's
+ * own env id) names that provider — no id, no button, and no "Or continue
+ * with" rule when there is neither. QR-6: nobody agrees to anything by
+ * typing an address here; a new account reads and accepts the terms on the
+ * next screen, where the acceptance is recorded.
  */
 export function SignInForm() {
     const router = useRouter();
     const params = useSearchParams();
     const next = params.get("next");
     const { status, sendOtp, sendEmailOtp, google: googleDoor, facebook: facebookDoor } = useAuth();
+    const providers = useProviderIds();
+    const anyProvider = !!(providers.googleClientId || providers.facebookAppId);
     const [door, setDoor] = React.useState<Door>(params.get("door") === "mobile" ? "mobile" : "email");
     const [email, setEmail] = React.useState(params.get("email") ?? "");
     const [mobile, setMobile] = React.useState("");
@@ -171,44 +178,32 @@ export function SignInForm() {
                 </button>
             </form>
 
-            <div className="my-7 flex items-center gap-4 text-xs text-dim">
-                <span className="h-px flex-1 bg-line" />
-                Or continue with
-                <span className="h-px flex-1 bg-line" />
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-                {hasGoogleSignIn ? (
-                    <GoogleButton onCredential={google} />
-                ) : (
-                    <button type="button" disabled title="Google sign-in is not set up on this site yet" className="flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-white text-sm font-medium text-ink opacity-60">
-                        <GoogleMark />
-                        Google
-                    </button>
-                )}
-                <FacebookButton onToken={facebook} disabled={busy}>
-                    <FacebookMark />
-                    Facebook
-                </FacebookButton>
-            </div>
-            <p className="mt-2 text-xs text-dim">Every ADX account proves an email and a mobile number. Whichever you start with, the other comes next.</p>
+            {anyProvider && (
+                <>
+                    <div className="my-7 flex items-center gap-4 text-xs text-dim">
+                        <span className="h-px flex-1 bg-line" />
+                        Or continue with
+                        <span className="h-px flex-1 bg-line" />
+                    </div>
+                    <div className={providers.googleClientId && providers.facebookAppId ? "grid gap-3 sm:grid-cols-2" : "grid gap-3"}>
+                        {providers.googleClientId && <GoogleButton clientId={providers.googleClientId} onCredential={google} />}
+                        {providers.facebookAppId && (
+                            <FacebookButton appId={providers.facebookAppId} onToken={facebook} disabled={busy}>
+                                <FacebookMark />
+                                {providers.googleClientId ? "Facebook" : "Continue with Facebook"}
+                            </FacebookButton>
+                        )}
+                    </div>
+                </>
+            )}
+            <p className="mt-6 text-xs text-dim">Every ADX account proves an email and a mobile number. Whichever you start with, the other comes next.</p>
 
-            <p className="mt-6 text-xs text-dim">
-                By continuing, you agree to ADX&apos;s{" "}
-                <Link href="/terms.html" className="text-ink underline underline-offset-2">Terms</Link> &amp;{" "}
-                <Link href="/privacy.html" className="text-ink underline underline-offset-2">Privacy Policy</Link>.
+            <p className="mt-3 text-xs text-dim">
+                New to ADX? Before your account opens you will read and accept the{" "}
+                <Link href="/legal/TERMS_OF_SERVICE" className="text-ink underline underline-offset-2">Terms of service</Link> and the{" "}
+                <Link href="/legal/PRIVACY_POLICY" className="text-ink underline underline-offset-2">Privacy policy</Link>.
             </p>
         </AuthCard>
-    );
-}
-
-function GoogleMark() {
-    return (
-        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>
-            <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.5 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.3l7.9 6.1C12.4 13.4 17.7 9.5 24 9.5z" />
-            <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z" />
-            <path fill="#FBBC05" d="M10.5 28.6A14.5 14.5 0 0 1 9.7 24c0-1.6.3-3.1.8-4.6l-7.9-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.7l7.9-6.1z" />
-            <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-3.9-13.5-9.4l-7.9 6.1C6.5 42.6 14.6 48 24 48z" />
-        </svg>
     );
 }
 

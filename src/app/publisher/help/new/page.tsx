@@ -11,7 +11,21 @@ import { useLoad } from "@/components/publisher/use-load";
 import { messageOf } from "@/lib/api-client";
 import { bookingRef, dateRange, formatMoney, ISSUE_TABS, longDate, publisherWorkspace, type Booking, type MyListing, type UploadedFile, type Withdrawal } from "@/services/publisher-workspace";
 
-type Kind = (typeof ISSUE_TABS)[number]["value"];
+/**
+ * Every category the app's Report an issue offers: the three the frame
+ * draws, each about a record the publisher picks, and the four the desk
+ * also takes — a bug, the account, agent access, anything else — which are
+ * about no one record.
+ */
+const TABS: { value: "BOOKING" | "LISTING" | "PAYOUT" | "APP_BUG" | "ACCOUNT" | "ACCESS" | "OTHER"; label: string; category: string; related: boolean }[] = [
+    ...ISSUE_TABS.map((tab) => ({ ...tab, related: true })),
+    { value: "APP_BUG", label: "App or website", category: "APP_BUG", related: false },
+    { value: "ACCOUNT", label: "Account", category: "ACCOUNT", related: false },
+    { value: "ACCESS", label: "Agent access", category: "ACCESS", related: false },
+    { value: "OTHER", label: "Other", category: "OTHER", related: false },
+];
+
+type Kind = (typeof TABS)[number]["value"];
 
 interface Related {
     bookings: Booking[];
@@ -45,7 +59,8 @@ export default function NewRequestPage() {
 function NewRequestView() {
     const router = useRouter();
     const search = useSearchParams();
-    const initial: Kind = search.get("type") === "listing" ? "LISTING" : search.get("type") === "payout" ? "PAYOUT" : "BOOKING";
+    const preset = TABS.find((t) => t.category === search.get("category") && !t.related)?.value;
+    const initial: Kind = search.get("type") === "listing" ? "LISTING" : search.get("type") === "payout" ? "PAYOUT" : (preset ?? "BOOKING");
     const { data, error, loading, reload } = useLoad("related", readRelated);
     const [kind, setKind] = React.useState<Kind>(initial);
     const [ref, setRef] = React.useState(search.get("ref") ?? "");
@@ -62,7 +77,7 @@ function NewRequestView() {
             ? data.listings.map((l) => ({ id: l.id, label: `${l.displayId ?? l.title}${l.displayId ? ` · ${l.title}` : ""}` }))
             : data.payouts.map((p) => ({ id: p.id, label: `${p.reference} · ${formatMoney(p.netAmount)} · ${longDate(p.requestedAt)}` }));
     const chosen = options.find((o) => o.id === ref) ?? null;
-    const tab = ISSUE_TABS.find((t) => t.value === kind)!;
+    const tab = TABS.find((t) => t.value === kind)!;
 
     const send = async (event: React.FormEvent) => {
         event.preventDefault();
@@ -71,7 +86,7 @@ function NewRequestView() {
         setBusy(true);
         try {
             const ticket = await publisherWorkspace.createTicket({
-                category: tab.category,
+                category: tab.category as Parameters<typeof publisherWorkspace.createTicket>[0]["category"],
                 title: chosen ? `${tab.label}: ${chosen.label.split(" · ").slice(0, 2).join(" · ")}` : `${tab.label} request`,
                 description: chosen ? `${chosen.label}\n\n${text.trim()}` : text.trim(),
                 ...(kind === "BOOKING" && chosen ? { relatedOrderId: chosen.id } : {}),
@@ -91,7 +106,7 @@ function NewRequestView() {
             <form onSubmit={send}>
                 <Panel className="mt-6">
                     <CardTitle>Request type</CardTitle>
-                    <div className="mt-4">
+                    <div className="mt-4 max-w-full overflow-x-auto">
                         <Segmented
                             label="Request type"
                             value={kind}
@@ -99,27 +114,29 @@ function NewRequestView() {
                                 setKind(next);
                                 setRef("");
                             }}
-                            options={ISSUE_TABS.map((t) => ({ value: t.value, label: t.label }))}
+                            options={TABS.map((t) => ({ value: t.value, label: t.label }))}
                         />
                     </div>
 
-                    <div className="relative mt-5 rounded-md border border-line bg-white px-3 pb-2 pt-5">
-                        <label htmlFor="req-ref" className="absolute left-3 top-1.5 text-[11px] text-dim">
-                            {tab.label}
-                        </label>
-                        {!data && loading ? (
-                            <p className="text-sm text-dim">Loading…</p>
-                        ) : (
-                            <select id="req-ref" value={ref} onChange={(event) => setRef(event.target.value)} className="w-full bg-transparent text-sm text-ink focus:outline-none">
-                                <option value="">{options.length === 0 ? `No ${tab.label.toLowerCase()} to choose from` : `Choose the ${tab.label.toLowerCase()} this is about`}</option>
-                                {options.map((option) => (
-                                    <option key={option.id} value={option.id}>
-                                        {option.label}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                    </div>
+                    {tab.related && (
+                        <div className="relative mt-5 rounded-md border border-line bg-white px-3 pb-2 pt-5">
+                            <label htmlFor="req-ref" className="absolute left-3 top-1.5 text-[11px] text-dim">
+                                {tab.label}
+                            </label>
+                            {!data && loading ? (
+                                <p className="text-sm text-dim">Loading…</p>
+                            ) : (
+                                <select id="req-ref" value={ref} onChange={(event) => setRef(event.target.value)} className="w-full bg-transparent text-sm text-ink focus:outline-none">
+                                    <option value="">{options.length === 0 ? `No ${tab.label.toLowerCase()} to choose from` : `Choose the ${tab.label.toLowerCase()} this is about`}</option>
+                                    {options.map((option) => (
+                                        <option key={option.id} value={option.id}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+                        </div>
+                    )}
                     {error && (
                         <div className="mt-3">
                             <ErrorNote message={error} onRetry={reload} />

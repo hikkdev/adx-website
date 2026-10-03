@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Check, ChevronDown, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/switch";
 
 /**
  * The form controls the two boards draw: a bordered box with its label
@@ -245,5 +246,18 @@ export function LabelledInput({ label, value, onChange, placeholder, type = "tex
                 className={cn("h-9 w-full rounded-md border border-line bg-white px-3 text-sm text-ink placeholder:text-dim focus:border-ink focus:outline-none", (readOnly || disabled) && "bg-ground text-dim")}
             />
         </label>
+    );
+}
+
+/** A yes/no as a bordered row with the switch at its right — "Available to book now?" and the flow's `switch` fields. */
+export function SwitchRow({ label, description, checked, onChange, className }: { label: string; description?: string; checked: boolean; onChange: (next: boolean) => void; className?: string }) {
+    return (
+        <div className={cn("flex items-center justify-between gap-4 rounded-md border border-line bg-white px-4 py-3", className)}>
+            <div className="min-w-0">
+                <p className="text-sm font-medium text-ink">{label}</p>
+                {description && <p className="text-xs text-dim">{description}</p>}
+            </div>
+            <Switch checked={checked} onCheckedChange={onChange} aria-label={label} className="data-[state=checked]:bg-brand" />
+        </div>
     );
 }

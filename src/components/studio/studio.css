@@ -1,0 +1,77 @@
+/*
+ * ST-1 (27 Sep 2026): Puck dressed as an ADX tool.
+ *
+ * Puck exposes its look as CSS custom properties on :root; this file sets
+ * them again on Studio's own wrapper so the editor draws in the website's
+ * tokens (ink #141518, dim #77787d, line #eaeae7, brand #bd2020, paper
+ * #eeeae2, ground #f8f8f6, Inter) rather than Puck's blue.
+ */
+.adx-studio {
+    --puck-color-interactive: #bd2020;
+    --puck-color-interactive-soft: #fce9e8;
+    --puck-color-interactive-subtle: #f6d4d2;
+    --puck-color-interactive-soft-hover: #f6d4d2;
+    --puck-color-focus-ring: #bd2020;
+    --puck-color-selection-border: #bd2020;
+    --puck-color-surface: #ffffff;
+    --puck-color-surface-subtle: #f8f8f6;
+    --puck-color-surface-muted: #eeeae2;
+    --puck-color-border: #eaeae7;
+    --puck-color-border-hover: #77787d;
+    --puck-color-text: #141518;
+    --puck-color-text-secondary: #77787d;
+    --puck-color-text-muted: #77787d;
+    --puck-color-text-subtle: #77787d;
+    --puck-color-text-inverse: #ffffff;
+    --puck-field-color-bg: #ffffff;
+    --puck-field-color-bg-hover: #f8f8f6;
+    --puck-field-color-border: #eaeae7;
+    --puck-field-color-border-hover: #77787d;
+    --puck-field-color-text: #141518;
+    --puck-field-radius: 6px;
+    --puck-radius-m: 6px;
+    --puck-radius-l: 10px;
+    --puck-font-family: var(--font-sans), Inter, system-ui, sans-serif;
+}
+
+/* Puck re-declares the family on its entry node; Studio's wins there too. */
+.adx-studio [data-puck-entry] {
+    --puck-font-family: var(--font-sans), Inter, system-ui, sans-serif;
+}
+
+/* The canvas: the site's ground, so a page is judged on the paper it ships on. */
+.adx-studio .adx-studio-canvas [data-puck-dropzone] {
+    background: #f8f8f6;
+}
+
+/* A content block that draws nothing yet (no picture, an empty rail) says so instead of leaving a gap. */
+.adx-studio-empty-note {
+    display: none;
+}
+.adx-studio-content:empty + .adx-studio-empty-note {
+    display: flex;
+}
+
+/* An empty page reads as an invitation, not a void. */
+.adx-studio [data-puck-dropzone]:empty {
+    min-height: 240px;
+}
+
+/* The phone frame around an app home. */
+.adx-studio-phone {
+    width: 390px;
+    max-width: 100%;
+    margin: 0 auto;
+    border: 10px solid #141518;
+    border-radius: 36px;
+    background: #ffffff;
+    overflow: hidden;
+    box-shadow: 0 20px 40px rgba(20, 21, 24, 0.18);
+}
+.adx-studio-phone::before {
+    content: "";
+    display: block;
+    height: 26px;
+    background: #ffffff;
+    border-bottom: 1px solid #eaeae7;
+}

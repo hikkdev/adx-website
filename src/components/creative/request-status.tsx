@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { AgeGate, useAgeGate } from "@/components/checkout/age-gate";
 import { creativeHref, type CreativeProps } from "@/components/creative/creative-screen";
 import { useSpotCards } from "@/components/creative/use-spot-cards";
 import { LabeledTextarea } from "@/components/planner/fields";
@@ -46,7 +47,9 @@ const TONE: Record<string, string> = {
  * refused — because the request is the campaign's own record. DQ-1: the
  * desk's quote sits at the top while it awaits an answer — Accept starts
  * the design and puts "Design by ADX" on the charges; Decline leaves the
- * campaign to the advertiser's own artwork.
+ * campaign to the advertiser's own artwork. Accepting is an order (29 Sep
+ * 2026): the age gate asks a missing date of birth first and holds Accept
+ * for someone under 18; declining is never held.
  */
 export function RequestStatus({ campaign, replace, reload }: CreativeProps) {
     const spots = campaign.spots.filter((spot) => spot.status !== "CANCELLED");
@@ -60,10 +63,12 @@ export function RequestStatus({ campaign, replace, reload }: CreativeProps) {
     const [note, setNote] = React.useState("");
     const [busy, setBusy] = React.useState<"accept" | "changes" | "quote-accept" | "quote-decline" | null>(null);
     const [error, setError] = React.useState<string | null>(null);
+    const age = useAgeGate();
     const quote = campaign.designQuoteStatus ? { amount: campaign.designQuoteAmount ?? null, status: campaign.designQuoteStatus, note: campaign.designQuoteNote ?? null, quotedAt: campaign.designQuotedAt ?? null, respondedAt: campaign.designQuoteRespondedAt ?? null } : null;
 
     const answerQuote = async (decision: "ACCEPTED" | "DECLINED") => {
         if (busy) return;
+        if (decision === "ACCEPTED" && !age.ready(() => void answerQuote("ACCEPTED"))) return;
         setBusy(decision === "ACCEPTED" ? "quote-accept" : "quote-decline");
         setError(null);
         try {
@@ -71,7 +76,7 @@ export function RequestStatus({ campaign, replace, reload }: CreativeProps) {
             replace(updated);
             reload();
         } catch (caught) {
-            setError(messageOf(caught, "Could not record your answer to the quote."));
+            if (!age.caught(caught, () => void answerQuote(decision))) setError(messageOf(caught, "Could not record your answer to the quote."));
         } finally {
             setBusy(null);
         }
@@ -119,9 +124,10 @@ export function RequestStatus({ campaign, replace, reload }: CreativeProps) {
                         </p>
                     )}
                     <p className="text-sm text-dim">Accept and the design starts; the fee is added to your campaign&apos;s charges as &ldquo;Design by ADX&rdquo; and paid with the booking. Decline and the campaign stays as it is — you supply the artwork yourself.</p>
+                    <AgeGate gate={age} />
                     {error && <InlineError message={error} />}
                     <div className="flex flex-wrap gap-3">
-                        <button type="button" onClick={() => void answerQuote("ACCEPTED")} disabled={busy !== null} className="inline-flex h-12 items-center rounded-md bg-brand px-6 text-sm font-medium text-white hover:bg-[#a51b1b] disabled:opacity-60">
+                        <button type="button" onClick={() => void answerQuote("ACCEPTED")} disabled={busy !== null || age.blocked} className="inline-flex h-12 items-center rounded-md bg-brand px-6 text-sm font-medium text-white hover:bg-[#a51b1b] disabled:opacity-60">
                             {busy === "quote-accept" ? "Accepting…" : `Accept the ${rupees(quote.amount)} quote`}
                         </button>
                         <button type="button" onClick={() => void answerQuote("DECLINED")} disabled={busy !== null} className="inline-flex h-12 items-center rounded-md border border-line bg-white px-6 text-sm font-medium text-ink hover:border-ink disabled:opacity-60">

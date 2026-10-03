@@ -6,13 +6,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { PageHeading } from "@/components/workspace/page-heading";
 import { btnOutline, btnPrimary, ErrorPanel, inputClass, LoadingLine, useAsync } from "@/components/advertiser/bits";
-import { advertiserWorkspace, REQUEST_TOPICS, requestTags, topicById, type CampaignRow, type UserProfile } from "@/services/advertiser-workspace";
+import { advertiserWorkspace, requestTags, type CampaignRow, type UserProfile } from "@/services/advertiser-workspace";
+import { AttachmentPicker, type PickedAttachment } from "@/components/support/attachment-picker";
+import { ALL_REQUEST_TOPICS, requestTopicById, requestTopicForCategory } from "@/components/support/request-topics";
 
 /**
  * DR 12 · 07 · 11 · New request (5204:74747): "Contact support" — the
- * campaign, the topic, a subject, the reply address, and the message.
- * `POST /support/tickets` with the topic and campaign as tags the desk and
- * the list both read; the answer lands on the request's own page.
+ * campaign, the topic, a subject, the reply address, the message and — as
+ * the app's Report an issue has it — an attachment. `POST /support/tickets`
+ * with the topic and campaign as tags the desk and the list both read; the
+ * answer lands on the request's own page. `?topic=` or `?category=` picks
+ * the topic.
  */
 export default function NewRequestPage() {
     return (
@@ -26,7 +30,7 @@ function NewRequest() {
     const router = useRouter();
     const params = useSearchParams();
     const presetCampaign = params.get("campaign") ?? "";
-    const presetTopic = topicById(params.get("topic")) ? params.get("topic")! : "";
+    const presetTopic = requestTopicById(params.get("topic"))?.id ?? requestTopicForCategory(params.get("category"))?.id ?? "";
 
     const state = useAsync(
         "new-request",
@@ -54,19 +58,24 @@ function RequestForm({ campaigns, profile, presetCampaign, presetTopic, onCancel
     const [topicId, setTopicId] = React.useState(presetTopic);
     const [subject, setSubject] = React.useState("");
     const [message, setMessage] = React.useState("");
+    const [attachment, setAttachment] = React.useState<PickedAttachment | null>(null);
     const [errors, setErrors] = React.useState<Record<string, string>>({});
     const [sending, setSending] = React.useState(false);
     const [failure, setFailure] = React.useState<string | null>(null);
 
     const submit = async (event: React.FormEvent) => {
         event.preventDefault();
-        const topic = topicById(topicId);
+        const topic = requestTopicById(topicId);
         const next: Record<string, string> = {};
         if (!topic) next.topic = "Choose what the request is about.";
         if (!subject.trim()) next.subject = "Give the request a subject.";
         if (!message.trim()) next.message = "Say what you need.";
         setErrors(next);
         if (Object.keys(next).length || !topic) return;
+        if (attachment?.busy) {
+            setFailure("The file is still uploading.");
+            return;
+        }
         setSending(true);
         setFailure(null);
         try {
@@ -77,6 +86,7 @@ function RequestForm({ campaigns, profile, presetCampaign, presetTopic, onCancel
                 description: campaign ? `${message.trim()}\n\nCampaign: ${campaign.name} (${campaign.reference})` : message.trim(),
                 category: topic.category,
                 ...(campaign ? { relatedCampaignId: campaign.id } : {}),
+                ...(attachment?.url ? { attachmentUrls: [attachment.url] } : {}),
                 tags: requestTags(topic, campaign?.id ?? null),
             });
             onSent(ticket.id);
@@ -110,7 +120,7 @@ function RequestForm({ campaigns, profile, presetCampaign, presetTopic, onCancel
                         <Field label="Topic" error={errors.topic}>
                             <select value={topicId} onChange={(e) => setTopicId(e.target.value)} className={`${inputClass} max-w-[258px] appearance-none ${topicId ? "" : "text-dim"}`} aria-invalid={!!errors.topic}>
                                 <option value="">Choose a topic</option>
-                                {REQUEST_TOPICS.map((t) => (
+                                {ALL_REQUEST_TOPICS.map((t) => (
                                     <option key={t.id} value={t.id}>
                                         {t.label}
                                     </option>
@@ -151,6 +161,8 @@ function RequestForm({ campaigns, profile, presetCampaign, presetTopic, onCancel
                         aria-invalid={!!errors.message}
                     />
                     {errors.message && <p className="mt-1 text-xs text-danger">{errors.message}</p>}
+                    <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-dim">Attachment (optional)</p>
+                    <AttachmentPicker className="mt-2" value={attachment} onChange={setAttachment} onError={setFailure} label="Add a screenshot, invoice or photo" />
                     {failure && <p className="mt-3 text-sm text-danger">{failure}</p>}
                     <div className="mt-4 flex justify-end gap-2">
                         <button type="button" onClick={onCancel} className={btnOutline}>

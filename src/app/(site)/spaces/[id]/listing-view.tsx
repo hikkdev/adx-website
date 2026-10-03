@@ -4,14 +4,41 @@ import * as React from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { Calendar, Check, ChevronDown, ChevronRight, Heart, Star, X } from "lucide-react";
+import { BadgeCheck, Calendar, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Eye, Heart, Link2, Share2, Star, X, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { LayoutBlocks } from "@/components/layout/layout-blocks";
+import { FeatureOff } from "@/components/platform/feature-off";
+import { useLayout } from "@/components/layout/use-layout";
+import { AvailabilityCalendar } from "@/components/site/availability-calendar";
 import { SpaceCard } from "@/components/site/space-card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth";
 import { cart, useCart } from "@/lib/cart";
+import { FLAG_INSTANT_BOOKING, FLAG_REVIEWS, useFlag, useSwitchedOff } from "@/lib/flags";
+import { pageHref } from "@/lib/site-routes";
 import { cn } from "@/lib/utils";
-import { browseService, formatChip, rupees, type BrowseCard, type ListingReview } from "@/services/browse";
+import {
+    browseService,
+    CATEGORY_LABEL,
+    dateSpan,
+    formatChip,
+    highlightsOf,
+    isIsoDay,
+    perDay,
+    publisherLine,
+    ratingLabel,
+    rupees,
+    shareLinkOf,
+    shareWordsOf,
+    slotsLabel,
+    similarHref,
+    cardAvailability,
+    countSpotView,
+    specsOf,
+    type BrowseCard,
+    type ListingReview,
+} from "@/services/browse";
 
 const MapPanel = dynamic(() => import("@/components/site/map-panel").then((m) => m.MapPanel), { ssr: false });
 
@@ -33,20 +60,53 @@ function daysBetween(from: string, to: string): number {
     return Math.round((b - a) / 86_400_000) + 1;
 }
 
-export function ListingView({ id }: { id: string }) {
+/** The visitor's dates off the URL, when both are days and the end is not before the start. */
+function datesOf(initial?: { from: string | null; to: string | null }): { from: string; to: string } | null {
+    if (!initial || !isIsoDay(initial.from) || !isIsoDay(initial.to) || initial.to < initial.from) return null;
+    return { from: initial.from, to: initial.to };
+}
+
+export function ListingView({ id, initialDates }: { id: string; initialDates?: { from: string | null; to: string | null } }) {
+    const urlDates = datesOf(initialDates);
     const router = useRouter();
     const { status } = useAuth();
     const { lines, dates } = useCart();
     const [state, setState] = React.useState<State>({ kind: "loading" });
     const [reviews, setReviews] = React.useState<{ items: ListingReview[]; total: number } | null>(null);
     const [similar, setSimilar] = React.useState<BrowseCard[]>([]);
+    const similarTrack = React.useRef<HTMLDivElement>(null);
     const [byPublisher, setByPublisher] = React.useState<BrowseCard[]>([]);
+    /* How many OTHER live spaces the publisher has — the "View all" line's count. */
+    const [publisherOthers, setPublisherOthers] = React.useState(0);
     const [photo, setPhoto] = React.useState(0);
-    const [from, setFrom] = React.useState(dates.from ?? isoToday(3));
-    const [to, setTo] = React.useState(dates.to ?? isoToday(16));
+    const [from, setFrom] = React.useState(urlDates?.from ?? dates.from ?? isoToday(3));
+    const [to, setTo] = React.useState(urlDates?.to ?? dates.to ?? isoToday(16));
+    /* AV-1: the calendar checks the dates only once they are the visitor's — from the URL, or picked here — never the page's placeholder fortnight. */
+    const [datesChosen, setDatesChosen] = React.useState(urlDates !== null);
     const [production, setProduction] = React.useState(true);
     const [openFaq, setOpenFaq] = React.useState(0);
     const [saved, setSaved] = React.useState(false);
+    const [allReviews, setAllReviews] = React.useState(false);
+    const instantOn = useFlag(FLAG_INSTANT_BOOKING);
+    /* The `marketplace.reviews` kill switch: while it is off the reviews are not read, and the section says so. */
+    const reviewsOff = useSwitchedOff(FLAG_REVIEWS);
+    /* LM-1: the sidebar's layout, for this space's city — read once the space is. */
+    const sidebarLayout = useLayout("WEB_LISTING", { city: state.kind === "ready" ? state.card.city : null, enabled: state.kind === "ready" });
+    /* AV-1: the slots left and free days over the visitor's own dates — the page's first read counts today. */
+    const [dated, setDated] = React.useState<{ key: string; card: Pick<BrowseCard, "display" | "slotsLeft" | "freeDays" | "windowDays"> } | null>(null);
+    const datedKey = datesChosen && from && to && from <= to ? `${from}|${to}` : null;
+    React.useEffect(() => {
+        if (!datedKey) return;
+        let cancelled = false;
+        const [f, t] = datedKey.split("|") as [string, string];
+        browseService
+            .listing(id, { from: f, to: t })
+            .then((card) => !cancelled && setDated({ key: datedKey, card }))
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [id, datedKey]);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -57,12 +117,24 @@ export function ListingView({ id }: { id: string }) {
                 setState({ kind: "ready", card });
                 setSaved(card.saved);
                 document.title = `${card.title} — ADX`;
-                browseService.reviews(card.id, 1, 6).then((page) => !cancelled && setReviews({ items: page.items, total: page.total })).catch(() => undefined);
-                browseService.similar(card.id).then((rows) => !cancelled && setSimilar(rows.filter((r) => r.id !== card.id).slice(0, 2))).catch(() => undefined);
+                /* The listing-data-gaps lot: one view of this spot's page — the marketplace detail and the shared `/s/<LST-…>` link both land here. */
+                countSpotView(card.id);
+                /* `/similar` answers browse cards (26 Sep 2026): drawn as they come. */
+                // SIM-1 (the owner, 27 Sep 2026): four at a time, scrolling for more, then "View all".
+                browseService
+                    .similar(card.id, 12)
+                    .then((cards) => !cancelled && setSimilar(cards.filter((c) => c.id !== card.id)))
+                    .catch(() => undefined);
                 if (card.publisherId) {
                     browseService
-                        .browse({ publisherId: card.publisherId, pageSize: 3 })
-                        .then((page) => !cancelled && setByPublisher(page.items.filter((r) => r.id !== card.id).slice(0, 2)))
+                        .browse({ publisherId: card.publisherId, pageSize: 4 })
+                        .then((page) => {
+                            if (cancelled) return;
+                            // The owner (27 Sep 2026): up to three more of the publisher's spaces, stacked, then "View all".
+                            const others = page.items.filter((r) => r.id !== card.id);
+                            setByPublisher(others.slice(0, 3));
+                            setPublisherOthers(Math.max(others.length, page.total - (page.items.some((r) => r.id === card.id) ? 1 : 0)));
+                        })
                         .catch(() => undefined);
                 }
             })
@@ -76,6 +148,20 @@ export function ListingView({ id }: { id: string }) {
         };
     }, [id]);
 
+    /* The reviews, once the space says it has some — its own read, so the switch can hold it back without re-reading the space. */
+    const reviewedCardId = state.kind === "ready" && state.card.reviewCount > 0 ? state.card.id : null;
+    React.useEffect(() => {
+        if (!reviewedCardId || reviewsOff) return;
+        let cancelled = false;
+        browseService
+            .reviews(reviewedCardId, 1, 20)
+            .then((page) => !cancelled && setReviews({ items: page.items, total: page.total }))
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [reviewedCardId, reviewsOff]);
+
     if (state.kind === "loading") {
         return (
             <div className="mx-auto max-w-[1920px] px-6 py-10 lg:px-16" aria-busy="true">
@@ -88,7 +174,7 @@ export function ListingView({ id }: { id: string }) {
             <div className="mx-auto max-w-[720px] px-6 py-24 text-center">
                 <p className="text-2xl font-semibold text-ink">{state.kind === "missing" ? "That space is not available" : "Could not load this space"}</p>
                 <p className="mt-2 text-sm text-dim">{state.kind === "missing" ? "It may have been taken off the market, or the link is old." : state.message}</p>
-                <Link href="/spaces" className="mt-6 inline-block rounded-[11px] bg-brand px-6 py-3 text-sm font-semibold text-white">
+                <Link href={pageHref("explore")} className="mt-6 inline-block rounded-[11px] bg-brand px-6 py-3 text-sm font-semibold text-white">
                     Explore spaces
                 </Link>
             </div>
@@ -113,6 +199,18 @@ export function ListingView({ id }: { id: string }) {
         card.display === "DIGITAL" ? "Loop scheduling by ADX" : "Installation and removal of the creative",
     ];
     const excluded = ["Creative design and artwork production", card.display === "DIGITAL" ? "Content longer than the slot" : "Any production not included in your booking", "Extension beyond booked flight dates"];
+
+    /* The dates, as the page carries them: in the URL (`?from=…&to=…`), so a link or a reload keeps them. */
+    const chooseDates = (nextFrom: string, nextTo: string) => {
+        setFrom(nextFrom);
+        setTo(nextTo);
+        setDatesChosen(true);
+        if (!isIsoDay(nextFrom) || !isIsoDay(nextTo) || nextTo < nextFrom) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set("from", nextFrom);
+        url.searchParams.set("to", nextTo);
+        window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+    };
 
     const addToCampaign = () => {
         if (!inCart) {
@@ -143,12 +241,40 @@ export function ListingView({ id }: { id: string }) {
         }
     };
 
+    /* The app's share button: the spot's words and the server's link to its page (`shareUrl`), or this page's address while the spot has none. */
+    const shareUrl = () => shareLinkOf(card, window.location.href);
+    const copyLink = async () => {
+        try {
+            await navigator.clipboard.writeText(shareUrl());
+            toast.success("Link copied", { description: shareUrl() });
+        } catch {
+            toast.error("Could not copy the link. Copy it from the address bar instead.");
+        }
+    };
+    const shareVia = async () => {
+        try {
+            await navigator.share({ title: card.title, text: shareWordsOf(card), url: shareUrl() });
+        } catch (caught) {
+            if (caught instanceof DOMException && caught.name === "AbortError") return;
+            await copyLink();
+        }
+    };
+    const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+    const rating = ratingLabel(card.ratingAvg, card.reviewCount);
+    const highlights = highlightsOf(card, instantOn);
+    const specs = specsOf(card);
+    const onDates = datedKey && dated?.key === datedKey ? dated.card : null;
+    const slots = slotsLabel(onDates ?? card);
+    const onDatesLine = onDates ? cardAvailability(onDates, true) : null;
+    const approval = publisherLine(card, instantOn);
+    const shownReviews = reviews ? (allReviews ? reviews.items : reviews.items.slice(0, 2)) : [];
+
     return (
         <div className="mx-auto max-w-[1920px] px-6 pb-16 lg:px-16">
             <nav className="flex items-center gap-1.5 py-3 text-xs text-dim" aria-label="Breadcrumb">
                 <Link href="/" className="hover:text-ink">Home</Link>
                 <ChevronRight className="size-3" aria-hidden />
-                <Link href={card.city ? `/spaces?city=${encodeURIComponent(card.city)}` : "/spaces"} className="hover:text-ink">{card.city ?? "Spaces"}</Link>
+                <Link href={pageHref("explore", {}, card.city ? { search: `city=${encodeURIComponent(card.city)}` } : {})} className="hover:text-ink">{card.city ?? "Spaces"}</Link>
                 <ChevronRight className="size-3" aria-hidden />
                 <Link href={`/spaces?category=${card.category}`} className="hover:text-ink">{formatChip(card).toLowerCase().replace(/^\w/, (c) => c.toUpperCase())}</Link>
                 <ChevronRight className="size-3" aria-hidden />
@@ -164,10 +290,43 @@ export function ListingView({ id }: { id: string }) {
                         ) : (
                             <div className="flex h-[560px] items-center justify-center text-sm text-dim">No photograph yet</div>
                         )}
-                        <button type="button" onClick={toggleSave} aria-pressed={saved} className="absolute right-4 top-4 flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-semibold text-ink shadow-sm">
-                            <Heart className={cn("size-4", saved ? "fill-brand text-brand" : "text-ink")} aria-hidden />
-                            {saved ? "Saved" : "Save"}
-                        </button>
+                        <div className="absolute right-4 top-4 flex items-center gap-2">
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <button type="button" className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-semibold text-ink shadow-sm" data-testid="listing-share">
+                                        <Share2 className="size-4" aria-hidden />
+                                        Share
+                                    </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-52">
+                                    <DropdownMenuItem onSelect={() => void copyLink()}>
+                                        <Link2 className="mr-2 size-4" aria-hidden />
+                                        Copy link
+                                    </DropdownMenuItem>
+                                    {canShare && (
+                                        <DropdownMenuItem onSelect={() => void shareVia()}>
+                                            <Share2 className="mr-2 size-4" aria-hidden />
+                                            Share via…
+                                        </DropdownMenuItem>
+                                    )}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                            <button type="button" onClick={toggleSave} aria-pressed={saved} className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-semibold text-ink shadow-sm">
+                                <Heart className={cn("size-4", saved ? "fill-brand text-brand" : "text-ink")} aria-hidden />
+                                {saved ? "Saved" : "Save"}
+                            </button>
+                        </div>
+                        {instantOn && card.instantBooking && (
+                            <span className="absolute left-4 top-4 flex h-9 items-center gap-1.5 rounded-full bg-white px-4 text-sm font-semibold text-brand shadow-sm" data-testid="listing-instant">
+                                <Zap className="size-4 fill-brand" aria-hidden />
+                                Instant booking
+                            </span>
+                        )}
+                        {photos.length > 1 && (
+                            <span className="absolute bottom-4 right-4 rounded bg-black/40 px-2.5 py-1 text-xs text-white">
+                                {photo + 1} / {photos.length}
+                            </span>
+                        )}
                     </div>
                     {photos.length > 1 && (
                         <div className="mt-4 grid grid-cols-4 gap-3">
@@ -201,10 +360,63 @@ export function ListingView({ id }: { id: string }) {
                         <ul className="mt-6 space-y-2 text-sm text-ink">
                             <li>{formatChip(card).toLowerCase().replace(/^\w/, (c) => c.toUpperCase())} in {area}{card.city ? `, ${card.city}` : ""}</li>
                             {card.size && <li>{card.size}{card.illumination ? ` · ${card.illumination}` : ""}{card.facing ? ` · facing ${card.facing.toLowerCase()}` : ""}</li>}
-                            {card.availableNow ? <li>Available now for your campaign dates</li> : card.availableFrom ? <li>Available from {new Date(card.availableFrom).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</li> : null}
+                            {onDatesLine && onDatesLine.tone !== "free" ? <li>{onDatesLine.tone === "booked" ? "Booked on your dates — see the calendar below for free dates" : `${onDatesLine.text} on your dates — see the calendar below`}</li> : card.availableNow ? <li>Available now for your campaign dates</li> : card.availableFrom ? <li>Available from {new Date(card.availableFrom).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</li> : null}
                             {card.publisherVerified && <li>Publisher verified by ADX · installation proof on every booking</li>}
                             {card.estimatedDailyFootfall ? <li>About {card.estimatedDailyFootfall.toLocaleString("en-IN")} people pass this space every day</li> : null}
                         </ul>
+                        {highlights.length > 0 && (
+                            <div className="mt-6 flex flex-wrap gap-3" data-testid="listing-highlights">
+                                {highlights.map((item) => (
+                                    <span key={item.key} className="inline-flex items-center gap-2 rounded-full border border-line bg-white px-4 py-2 text-sm font-medium text-ink">
+                                        {item.key === "instant" || item.key === "lit" ? (
+                                            <Zap className="size-4 text-brand" aria-hidden />
+                                        ) : item.key === "footfall" ? (
+                                            <Eye className="size-4 text-brand" aria-hidden />
+                                        ) : item.key === "available" ? (
+                                            <CheckCircle2 className="size-4 text-brand" aria-hidden />
+                                        ) : (
+                                            <Star className="size-4 text-brand" aria-hidden />
+                                        )}
+                                        {item.label}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </section>
+
+                    {specs.length > 0 && (
+                        <section className="mt-10" data-testid="listing-specs">
+                            <h2 className="text-2xl font-bold tracking-tight text-ink">{CATEGORY_LABEL[card.category]} specs</h2>
+                            <dl className="mt-5 grid gap-x-10 gap-y-4 rounded-2xl border border-line bg-white p-6 sm:grid-cols-2 xl:grid-cols-3">
+                                {specs.map((row) => (
+                                    <div key={row.label}>
+                                        <dt className="text-xs font-bold uppercase tracking-[0.8px] text-dim">{row.label}</dt>
+                                        <dd className="mt-1 text-sm font-medium text-ink">{row.value}</dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </section>
+                    )}
+
+                    <section className="mt-10 scroll-mt-24" id="availability" data-testid="listing-availability">
+                        <h2 className="text-2xl font-bold tracking-tight text-ink">Availability</h2>
+                        <p className="mt-1 text-sm text-dim">
+                            {card.display === "DIGITAL" && card.slotsTotal > 1
+                                ? `Booked by the day. This screen sells ${card.slotsTotal} slots in its loop, so a day can be partly booked and still have room.`
+                                : "Booked by the day. One booking holds the whole space for its dates."}
+                        </p>
+                        <div className="mt-5">
+                            <AvailabilityCalendar
+                                listingId={card.id}
+                                slotsTotal={card.slotsTotal}
+                                digital={card.display === "DIGITAL"}
+                                chosen={datesChosen && days > 0 ? { from, to } : null}
+                                onApply={(nextFrom, nextTo) => {
+                                    chooseDates(nextFrom, nextTo);
+                                    toast.success("Dates updated", { description: `Plan your booking now reads ${dateSpan(nextFrom, nextTo)}. Add to campaign books these dates.` });
+                                }}
+                            />
+                        </div>
                     </section>
 
                     <section className="mt-10">
@@ -231,40 +443,57 @@ export function ListingView({ id }: { id: string }) {
                                 </p>
                             ))}
                         </div>
-                        <Link href="/help#artwork" className="mt-4 inline-block text-sm font-medium text-ink underline underline-offset-2">
+                        <Link href={pageHref("help", {}, { hash: "artwork" })} className="mt-4 inline-block text-sm font-medium text-ink underline underline-offset-2">
                             View artwork requirements
                         </Link>
                     </section>
 
-                    <section className="mt-10">
-                        <h2 className="text-2xl font-bold tracking-tight text-ink">Reviews</h2>
-                        {card.reviewCount > 0 && card.ratingAvg ? (
+                    <section className="mt-10" data-testid="listing-reviews">
+                        <h2 className="text-2xl font-bold tracking-tight text-ink">{card.reviewCount > 0 ? `Reviews (${card.reviewCount})` : "Reviews"}</h2>
+                        {reviewsOff ? (
+                            <FeatureOff flag={FLAG_REVIEWS} className="mt-4" />
+                        ) : card.reviewCount > 0 && rating ? (
                             <>
                                 <div className="mt-4 flex items-center gap-3">
-                                    <span className="text-3xl font-extrabold text-ink">{Number(card.ratingAvg).toFixed(1)}</span>
+                                    <span className="text-3xl font-extrabold text-ink">{rating}</span>
                                     <Stars value={Number(card.ratingAvg)} />
                                 </div>
-                                <p className="mt-1 text-xs text-dim">{card.reviewCount} review{card.reviewCount === 1 ? "" : "s"}</p>
-                                {reviews && reviews.items.length > 0 && (
+                                <p className="mt-1 text-xs text-dim">
+                                    {card.reviewCount} review{card.reviewCount === 1 ? "" : "s"} from advertisers whose campaigns ran here
+                                </p>
+                                {status !== "signed-in" ? (
+                                    <p className="mt-5 text-sm text-dim">
+                                        <Link href={`/sign-in?next=${encodeURIComponent(`/spaces/${encodeURIComponent(id)}`)}`} className="font-medium text-ink underline underline-offset-2">
+                                            Sign in
+                                        </Link>{" "}
+                                        to read what advertisers said.
+                                    </p>
+                                ) : reviews && reviews.items.length > 0 ? (
                                     <>
-                                        <p className="mt-6 text-sm font-semibold text-ink">Featured reviews</p>
+                                        <p className="mt-6 text-sm font-semibold text-ink">{allReviews ? "What advertisers said" : "Featured reviews"}</p>
                                         <div className="mt-3 grid gap-4 md:grid-cols-2">
-                                            {reviews.items.slice(0, 2).map((review) => (
+                                            {shownReviews.map((review) => (
                                                 <div key={review.id} className="rounded-xl border border-line bg-white p-5">
                                                     <div className="flex items-center justify-between">
                                                         <p className="text-sm font-semibold text-ink">An advertiser on ADX</p>
                                                         <Stars value={review.rating} small />
                                                     </div>
-                                                    <p className="mt-2 text-sm text-dim">{review.note ?? "Booked and ran on this space."}</p>
-                                                    <p className="mt-2 text-xs text-dim">{new Date(review.createdAt).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</p>
+                                                    {review.note && <p className="mt-2 text-sm text-dim">{review.note}</p>}
+                                                    <p className="mt-2 text-xs text-dim">{new Date(review.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>
                                                 </div>
                                             ))}
                                         </div>
+                                        {!allReviews && reviews.items.length > 2 && (
+                                            <button type="button" onClick={() => setAllReviews(true)} className="mt-4 text-sm font-medium text-ink underline underline-offset-2 hover:text-brand">
+                                                Read all {reviews.items.length} reviews
+                                            </button>
+                                        )}
+                                        {allReviews && reviews.total > reviews.items.length && <p className="mt-3 text-xs text-dim">{reviews.total - reviews.items.length} more on ADX.</p>}
                                     </>
-                                )}
+                                ) : null}
                             </>
                         ) : (
-                            <p className="mt-3 text-sm text-dim">No reviews yet. Reviews come from advertisers whose campaigns ran on this space.</p>
+                            <p className="mt-3 text-sm text-dim">No reviews yet. Advertisers are asked once a campaign on this space has run.</p>
                         )}
                     </section>
 
@@ -285,13 +514,36 @@ export function ListingView({ id }: { id: string }) {
 
                     {similar.length > 0 && (
                         <section className="mt-10">
-                            <h2 className="text-2xl font-bold tracking-tight text-ink">Similar listing</h2>
-                            <p className="mt-1 text-sm text-dim">More {formatChip(card).toLowerCase()} spaces{card.city ? ` in ${card.city}` : ""}</p>
-                            <div className="mt-5 grid gap-6 md:grid-cols-2">
+                            <div className="flex flex-wrap items-end justify-between gap-4">
+                                <div>
+                                    <h2 className="text-2xl font-bold tracking-tight text-ink">Similar listing</h2>
+                                    <p className="mt-1 text-sm text-dim">More {formatChip(card).toLowerCase()} spaces{card.city ? ` in ${card.city}` : ""}</p>
+                                </div>
+                                {similar.length > 4 && (
+                                    <div className="flex items-center gap-2">
+                                        <button type="button" aria-label="Scroll similar listings back" onClick={() => similarTrack.current?.scrollBy({ left: -similarTrack.current.clientWidth, behavior: "smooth" })} className="flex size-9 items-center justify-center rounded-md border border-line bg-white text-ink hover:border-ink">
+                                            <ChevronLeft className="size-4" aria-hidden />
+                                        </button>
+                                        <button type="button" aria-label="Scroll similar listings on" onClick={() => similarTrack.current?.scrollBy({ left: similarTrack.current.clientWidth, behavior: "smooth" })} className="flex size-9 items-center justify-center rounded-md border border-line bg-white text-ink hover:border-ink">
+                                            <ChevronRight className="size-4" aria-hidden />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                            <div
+                                ref={similarTrack}
+                                data-testid="similar-row"
+                                className="mt-5 grid snap-x snap-mandatory auto-cols-[85%] grid-flow-col gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] sm:auto-cols-[calc((100%-1rem)/2)] xl:auto-cols-[calc((100%-3rem)/4)] [&::-webkit-scrollbar]:hidden"
+                            >
                                 {similar.map((row) => (
-                                    <SpaceCard key={row.id} card={row} />
+                                    <div key={row.id} className="snap-start">
+                                        <SpaceCard card={row} surface="WEB_LISTING" />
+                                    </div>
                                 ))}
                             </div>
+                            <Link href={similarHref(card)} className="mt-5 inline-flex h-11 items-center justify-center rounded-md border border-ink bg-white px-6 text-sm font-medium text-ink hover:bg-ground">
+                                View all similar listings
+                            </Link>
                         </section>
                     )}
                 </div>
@@ -302,11 +554,24 @@ export function ListingView({ id }: { id: string }) {
                         <div>
                             <h1 className="text-2xl font-bold tracking-tight text-ink">{card.title}</h1>
                             <p className="mt-1 text-sm text-dim">{area}{card.city ? `, ${card.city}` : ""}</p>
+                            <p className="mt-1.5 flex items-center gap-1.5 text-xs text-dim" data-testid="listing-rating">
+                                {rating ? (
+                                    <>
+                                        <Star className="size-3.5 fill-brand text-brand" aria-hidden />
+                                        <span className="font-semibold text-ink">{rating}</span>· {card.reviewCount} review{card.reviewCount === 1 ? "" : "s"}
+                                    </>
+                                ) : (
+                                    "No reviews yet"
+                                )}
+                            </p>
                         </div>
-                        <p className="shrink-0 text-right">
-                            <span className="text-2xl font-extrabold text-ink">{card.ratePerDay ? rupees(rate * 7) : "—"}</span>
-                            <span className="text-sm text-dim"> / week</span>
-                        </p>
+                        <div className="shrink-0 text-right">
+                            <p>
+                                <span className="text-2xl font-extrabold text-ink">{card.ratePerDay ? rupees(rate * 7) : "—"}</span>
+                                <span className="text-sm text-dim"> / week</span>
+                            </p>
+                            <p className="mt-0.5 text-xs text-dim">{perDay(card.ratePerDay)}</p>
+                        </div>
                     </div>
 
                     <div className="flex items-center gap-4 rounded-xl border border-line bg-white p-4">
@@ -316,33 +581,42 @@ export function ListingView({ id }: { id: string }) {
                             <span className="flex size-11 items-center justify-center rounded-full bg-ground text-sm font-semibold text-ink">{(card.publisherName ?? "P").slice(0, 2).toUpperCase()}</span>
                         )}
                         <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-ink">{card.publisherName ?? "ADX publisher"}</p>
+                            <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                                <span className="truncate">{card.publisherName ?? "ADX publisher"}</span>
+                                {card.publisherVerified === true && <BadgeCheck className="size-4 shrink-0 text-brand" aria-label="Verified by ADX" />}
+                                {card.publisherVerified === false && <span className="shrink-0 rounded bg-ground px-1.5 py-0.5 text-[10px] font-medium text-dim">Unverified</span>}
+                            </p>
                             {card.publisherId ? (
                                 <Link href={`/spaces?publisherId=${encodeURIComponent(card.publisherId)}`} className="text-xs text-dim hover:text-ink">
-                                    {byPublisher.length > 0 ? `${byPublisher.length}+ other spaces · ` : ""}View publisher →
+                                    {publisherOthers > 0 ? `${publisherOthers} other space${publisherOthers === 1 ? "" : "s"} · ` : ""}View publisher →
                                 </Link>
                             ) : (
                                 <p className="text-xs text-dim">{card.publisherVerified ? "Verified by ADX" : "Listed on ADX"}</p>
                             )}
                         </div>
-                        {card.ratingAvg && (
+                        {rating && (
                             <span className="flex items-center gap-1 rounded-md bg-ground px-2.5 py-1.5 text-xs font-semibold text-ink">
                                 <Star className="size-3.5 fill-[#f5b301] text-[#f5b301]" aria-hidden />
-                                {Number(card.ratingAvg).toFixed(1)}
+                                {rating}
                             </span>
                         )}
                     </div>
+                    {approval && (
+                        <p className="px-1 text-xs leading-relaxed text-dim" data-testid="listing-publisher-line">
+                            {approval}
+                        </p>
+                    )}
 
                     <div className="rounded-xl border border-line bg-white p-4">
                         <p className="text-sm font-semibold text-ink">Plan your booking</p>
                         <div className="mt-3 grid grid-cols-2 gap-3">
                             <label className="flex h-11 items-center gap-2.5 rounded-md border border-line px-3 text-sm text-ink">
                                 <Calendar className="size-[18px] text-dim" aria-hidden />
-                                <input type="date" value={from} min={isoToday()} onChange={(e) => setFrom(e.target.value)} aria-label="Start date" className="min-w-0 flex-1 bg-transparent focus:outline-none" />
+                                <input type="date" value={from} min={isoToday()} onChange={(e) => chooseDates(e.target.value, to < e.target.value ? e.target.value : to)} aria-label="Start date" className="min-w-0 flex-1 bg-transparent focus:outline-none" />
                             </label>
                             <label className="flex h-11 items-center gap-2.5 rounded-md border border-line px-3 text-sm text-ink">
                                 <Calendar className="size-[18px] text-dim" aria-hidden />
-                                <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} aria-label="End date" className="min-w-0 flex-1 bg-transparent focus:outline-none" />
+                                <input type="date" value={to} min={from} onChange={(e) => chooseDates(from, e.target.value)} aria-label="End date" className="min-w-0 flex-1 bg-transparent focus:outline-none" />
                             </label>
                         </div>
                         <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
@@ -355,9 +629,17 @@ export function ListingView({ id }: { id: string }) {
                                 <p className="mt-1 text-ink">{card.placement ?? formatChip(card).toLowerCase().replace(/^\w/, (c) => c.toUpperCase())}</p>
                             </div>
                         </div>
-                        {card.display === "DIGITAL" && (
+                        {slots && (
                             <p className="mt-4 text-xs text-dim">
-                                {card.slotsLeft > 0 ? `${card.slotsLeft} of ${card.slotsTotal} slots free for these dates` : "Every slot is booked for these dates"}
+                                <span className={cn("mr-1.5 rounded-full px-2 py-0.5 font-semibold", slots === "Booked" ? "bg-ground text-dim" : "bg-brand-soft text-brand")}>{slots}</span>
+                                of {card.slotsTotal} on this screen{onDates ? " on your dates" : " today"} · the rate is per slot
+                            </p>
+                        )}
+                        {/* AV-1: a static wall has no loop; on the visitor's dates it says whether they are free, partly or wholly taken. */}
+                        {!slots && onDatesLine && (
+                            <p className="mt-4 text-xs text-dim">
+                                <span className={cn("mr-1.5 rounded-full px-2 py-0.5 font-semibold", onDatesLine.tone === "booked" ? "bg-ground text-dim" : "bg-[#fff4e5] text-[#9a5b00]")}>{onDatesLine.text}</span>
+                                <a href="#availability" className="underline underline-offset-2 hover:text-ink">See the calendar</a>
                             </p>
                         )}
                         <label className="mt-4 flex h-11 cursor-pointer items-center justify-between rounded-md border border-line px-3 text-sm text-ink">
@@ -386,7 +668,7 @@ export function ListingView({ id }: { id: string }) {
                     </button>
 
                     <div className="pt-6">
-                        <Link href="/help#booking" className="text-sm font-medium text-ink underline underline-offset-2">Ask about this space</Link>
+                        <Link href={pageHref("help", {}, { hash: "booking" })} className="text-sm font-medium text-ink underline underline-offset-2">Ask about this space</Link>
                         <div className="mt-4 flex flex-wrap gap-2">
                             {["Can I change my dates?", "What artwork is required?", "How do I track my campaign?"].map((q) => (
                                 <Link key={q} href={`/help?q=${encodeURIComponent(q)}`} className="rounded-full border border-line bg-white px-3.5 py-2.5 text-xs text-ink hover:border-ink">
@@ -396,21 +678,36 @@ export function ListingView({ id }: { id: string }) {
                         </div>
                     </div>
 
-                    {byPublisher.length > 0 && (
-                        <div className="pt-6">
-                            <h2 className="text-2xl font-bold tracking-tight text-ink">Publisher listing</h2>
-                            <p className="mt-1 text-sm text-dim">More spaces from {card.publisherName ?? "this publisher"}</p>
-                            <div className="mt-5 grid gap-4">
-                                {byPublisher.map((row) => (
-                                    <SpaceCard key={row.id} card={row} />
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
+                    {/* LM-1: the sidebar's lower part is the layout's — the publisher's other spaces and the sold ad slot, in the order ADX publishes. An empty slot draws nothing. */}
                     <div className="pt-6">
-                        <p className="text-xs text-dim">Advertisement</p>
-                        <div className="mt-2 flex h-[325px] items-center justify-center rounded-xl border border-dashed border-line bg-white text-sm text-dim">Reserved ad space</div>
+                        <LayoutBlocks
+                            surface="WEB_LISTING"
+                            layout={sidebarLayout}
+                            place={{ city: card.city }}
+                            gapClassName="pt-6"
+                            system={{
+                                publisher_listings: (title) =>
+                                    byPublisher.length > 0 ? (
+                                        <div>
+                                            <h2 className="text-2xl font-bold tracking-tight text-ink">{title ?? "Publisher listing"}</h2>
+                                            <p className="mt-1 text-sm text-dim">More spaces from {card.publisherName ?? "this publisher"}</p>
+                                            <div className="mt-5 flex flex-col gap-4">
+                                                {byPublisher.map((row) => (
+                                                    <SpaceCard key={row.id} card={row} surface="WEB_LISTING" />
+                                                ))}
+                                            </div>
+                                            {card.publisherId && (
+                                                <Link
+                                                    href={`/spaces?publisherId=${encodeURIComponent(card.publisherId)}`}
+                                                    className="mt-4 flex h-11 items-center justify-center rounded-md border border-ink bg-white text-sm font-medium text-ink hover:bg-ground"
+                                                >
+                                                    View all {publisherOthers + 1} listings from {card.publisherName ?? "this publisher"}
+                                                </Link>
+                                            )}
+                                        </div>
+                                    ) : null,
+                            }}
+                        />
                     </div>
                 </aside>
             </div>

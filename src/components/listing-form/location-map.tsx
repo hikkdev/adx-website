@@ -55,7 +55,9 @@ export function LocationMap({ point, onChange, disabled, height = 280 }: { point
         navigator.geolocation.getCurrentPosition(
             (position) => {
                 setLocating(false);
-                onChange({ latitude: position.coords.latitude, longitude: position.coords.longitude });
+                // The listing-data-gaps lot: the fix says how close it is — kept as the pin's accuracy. A clicked or dragged pin has none.
+                const accuracy = position.coords.accuracy;
+                onChange({ latitude: position.coords.latitude, longitude: position.coords.longitude, ...(Number.isFinite(accuracy) && accuracy >= 0 ? { accuracyM: accuracy } : {}) });
             },
             () => setLocating(false),
             { enableHighAccuracy: true, timeout: 10_000 }
@@ -63,7 +65,7 @@ export function LocationMap({ point, onChange, disabled, height = 280 }: { point
     };
 
     return (
-        <div className="relative overflow-hidden rounded-lg border border-line bg-[#f1f1ee]">
+        <div className="relative isolate overflow-hidden rounded-lg border border-line bg-[#f1f1ee]">
             <MapContainer center={center} zoom={point ? 15 : 11} scrollWheelZoom={false} style={{ height, width: "100%" }}>
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
                 <Recenter point={point} />

@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { FileText } from "lucide-react";
 import { apiBlob, messageOf } from "@/lib/api-client";
+import { privateFileIdOf } from "@/lib/private-file";
 import { cn } from "@/lib/utils";
 import { Panel } from "@/components/workspace/page-heading";
 import type { ActivityEntry, Tone } from "@/services/advertiser-workspace";
@@ -268,17 +269,20 @@ export function InitialsAvatar({ text, className }: { text: string; className?: 
 /**
  * A photograph off the backend. A public URL is drawn as it is; a path on
  * private storage (`/files/:id`) is fetched with the session's bearer and
- * drawn from an object URL, the way the app's downloads work.
+ * drawn from an object URL, the way the app's downloads work. ST-2 (28 Sep
+ * 2026): so is a whole `https://…/api/v1/files/:id` — the URL the backend
+ * records for a private file, proof photos filed as VERIFICATION among them.
  */
 export function PrivateImage({ src, alt, className }: { src: string | null | undefined; alt: string; className?: string }) {
-    const isPath = !!src && src.startsWith("/");
+    const fileId = privateFileIdOf(src);
+    const isPath = !!src && (src.startsWith("/") || fileId !== null);
     const [objectUrl, setObjectUrl] = React.useState<{ src: string; url: string } | null>(null);
 
     React.useEffect(() => {
         if (!src || !isPath) return;
         let cancelled = false;
         let made: string | null = null;
-        apiBlob(src.replace(/^\/api\/v1/, ""))
+        apiBlob(fileId ? `/files/${encodeURIComponent(fileId)}` : src.replace(/^\/api\/v1/, ""), { redirect: "follow" })
             .then((blob) => {
                 if (cancelled) return;
                 made = URL.createObjectURL(blob);
@@ -291,7 +295,7 @@ export function PrivateImage({ src, alt, className }: { src: string | null | und
             cancelled = true;
             if (made) URL.revokeObjectURL(made);
         };
-    }, [src, isPath]);
+    }, [src, isPath, fileId]);
 
     const resolved = !src ? null : isPath ? (objectUrl?.src === src ? objectUrl.url : null) : src;
     if (!resolved) return <div className={cn("bg-ground", className)} role="img" aria-label={alt} />;

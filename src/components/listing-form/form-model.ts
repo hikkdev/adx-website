@@ -2,17 +2,22 @@ import {
     areaSqFt,
     documentSlotsFor,
     isDigitalMediaType,
+    isoDay,
     normalisePlate,
+    RIGHTS_PAPERS,
     shortName,
     type Catalogue,
     type ContentStance,
     type Listing,
     type ListingCategory,
     type ListingDocument,
+    type ListingDocumentKind,
     type ListingDraft,
     type PricingUnit,
     type RightsBasis,
 } from "@/services/listing-editor";
+import { isPrivateFileUrl } from "@/lib/private-file";
+import { digitsOnly, ELEVATIONS, PHOTO_META_FIELD, siteCodeOf, siteFieldApplies, SITE_FIELD, TERMS_FIELD, TRAFFIC_GRADES, VEHICLE_KINDS, VISIBILITY_RANGES, wholeNumberOf, type ExtraAnswer } from "@/services/listing-site-questions";
 
 /**
  * The listing form — every answer the two boards ask for, in one object.
@@ -26,11 +31,17 @@ import {
 export interface GeoPoint {
     latitude: number;
     longitude: number;
+    /** How close the fix is, in metres — only when the browser's GPS placed the pin; a clicked or dragged pin has none. */
+    accuracyM?: number;
 }
 
 export interface StoredFile {
     url: string;
     name: string;
+    /** The upload row (`POST /upload` answers its id) — a photograph files it as `uploadedFileId`. */
+    fileId?: string;
+    /** When a photograph was taken, off its own EXIF, when the file says. */
+    takenAt?: string;
 }
 
 export type DocumentAnswer = StoredFile | { waived: string } | null;
@@ -51,16 +62,30 @@ export interface ListingForm {
     heightFt: string;
     illumination: string;
     facing: string;
-    /** "Installation by ADX · Special Pricing Applicable" — kept with the draft; no column on the listing. */
+    /** "Installation by ADX · Special Pricing Applicable" — `installationByAdx`, sent only when ticked (LF-2). */
     installationByAdx: boolean;
+
+    /*
+     * The site questions (listing-data-gaps lot, 3 Oct 2026) — asked of the
+     * spots `siteFieldApplies` names: footfall (a whole number), how busy,
+     * how far it is seen and how high (codes), a screen's pixels.
+     */
+    estimatedDailyFootfall: string;
+    trafficGrade: string;
+    visibility: string;
+    elevation: string;
+    widthPx: string;
+    heightPx: string;
 
     /* Vehicle and route (5204:78093) */
     vehicleNumber: string;
-    /** Kept with the draft; no column on the listing. */
+    /** "What kind of vehicle?" — a code (`VEHICLE_KINDS`) → `vehicleType`. */
+    vehicleType: string;
+    /** `vehicleModel` (LF-2). */
     vehicleModel: string;
     operatingHours: string;
 
-    /* Outlet and audience reach (5204:78275) — kept with the draft where no column exists */
+    /* Outlet and audience reach (5204:78275) — `broadcastLanguage`, `contentFormat`, the slot as `size`; the coverage its own column (never the city) */
     broadcastLanguage: string;
     contentFormat: string;
     coverage: string;
@@ -72,18 +97,25 @@ export interface ListingForm {
     uniqueSellingPoint: string;
     footfallNote: string;
 
-    /* Audience evidence (5204:78629) — kept with the draft; the two reports are filed as documents */
+    /* Audience evidence (5204:78629) — the six facts are `audienceDemographics`; the two reports are filed as AUDIENCE_RATING / FOOTFALL_AUDIT papers (LF-2) */
     audience: { ageBand: string; genderSplit: string; urbanRural: string; secProfile: string; incomeBracket: string; occupation: string };
     audienceDocs: { barc: StoredFile | null; footfall: StoredFile | null };
 
     /* Availability and booking terms (5204:78822) */
     availableYearRound: "" | "yes" | "no";
+    /** "Available to book now?" — the switch opens on (the column's default); only a "no" travels on a create. */
+    availableNow: boolean;
     visibilityWindow: string;
+    /** Hours the five windows cannot name — a phone's own pair, or a listing's — kept as they are rather than dropped. */
+    customHours: { from: string; to: string } | null;
     minBookingDays: string;
-    /** Kept with the draft; no columns on the listing. */
+    /** LF-2: `maxBookingDays` and `advanceBookingDays` (the option id is the number of days). */
     maxBookingDays: string;
     advanceBookingDays: string;
+    /** LF-2: `flexible` | `7` | `14` | `30` | `none` → `cancellationPolicy` (+ `cancellationNoticeDays`); see `cancellationOf`. */
     cancellationNotice: string;
+    /** Lot D (Q6/Q105): accept bookings the moment they are placed — sent only when true, and only while the flag is on. */
+    instantBooking: boolean;
 
     /* Listing price (5204:79001) */
     pricingUnit: PricingUnit | "";
@@ -92,7 +124,7 @@ export interface ListingForm {
     peakPeriodNote: string;
     slotsTotal: number;
 
-    /* Rate card (5204:79601) */
+    /* Rate card (5204:79601) — `rateCardUrl`, `rateCardValidFrom` / `rateCardValidTo` (YYYY-MM-DD), `seasonalVariationNote` (the words) */
     rateCard: StoredFile | null;
     rateCardValidFrom: string;
     rateCardValidTo: string;
@@ -112,6 +144,16 @@ export interface ListingForm {
 
     /* Requested updates (5204:82071) */
     clarification: string;
+
+    /**
+     * FL-1 (27 Sep 2026): answers to flow fields the listing has no column
+     * and this form no key for — the review step's attestation (`terms`),
+     * anything the console adds to `flows.listing` later — keyed by the
+     * flow field id and kept with the draft. Never read by `toCreateBody`;
+     * since the listing-data-gaps lot `declarationsBody` files the tick as
+     * `termsAcceptedAt` and every other one as an extra answer.
+     */
+    extra: Record<string, unknown>;
 }
 
 export function emptyForm(): ListingForm {
@@ -130,7 +172,14 @@ export function emptyForm(): ListingForm {
         illumination: "",
         facing: "",
         installationByAdx: false,
+        estimatedDailyFootfall: "",
+        trafficGrade: "",
+        visibility: "",
+        elevation: "",
+        widthPx: "",
+        heightPx: "",
         vehicleNumber: "",
+        vehicleType: "",
         vehicleModel: "",
         operatingHours: "",
         broadcastLanguage: "",
@@ -144,11 +193,14 @@ export function emptyForm(): ListingForm {
         audience: { ageBand: "", genderSplit: "", urbanRural: "", secProfile: "", incomeBracket: "", occupation: "" },
         audienceDocs: { barc: null, footfall: null },
         availableYearRound: "",
+        availableNow: true,
         visibilityWindow: "",
+        customHours: null,
         minBookingDays: "",
         maxBookingDays: "",
         advanceBookingDays: "",
         cancellationNotice: "",
+        instantBooking: false,
         pricingUnit: "",
         basePrice: "",
         availableFrom: "",
@@ -165,6 +217,7 @@ export function emptyForm(): ListingForm {
         ownVenue: false,
         documents: {},
         clarification: "",
+        extra: {},
     };
 }
 
@@ -223,6 +276,16 @@ export const BOOKING_PERIODS: { value: string; label: string }[] = [
     { value: "90", label: "90 days" },
 ];
 
+/** LF-2: the flow's `max_booking_days` options — the value is the number of days, as `maxBookingDays` stores it. */
+export const MAX_BOOKING_PERIODS: { value: string; label: string }[] = [
+    { value: "7", label: "7 days" },
+    { value: "14", label: "14 days" },
+    { value: "30", label: "30 days" },
+    { value: "90", label: "90 days" },
+    { value: "180", label: "180 days" },
+    { value: "365", label: "1 year" },
+];
+
 export const ADVANCE_BOOKING: { value: string; label: string }[] = [
     { value: "0", label: "No notice needed" },
     { value: "3", label: "3 days ahead" },
@@ -238,6 +301,28 @@ export const CANCELLATION_NOTICE: { value: string; label: string }[] = [
     { value: "30", label: "30 days' notice" },
     { value: "none", label: "No cancellation once confirmed" },
 ];
+
+/** LF-2: the flow's `rate_card_seasonal` options — stored as the words chosen (`seasonalVariationNote`), so the value is the label. */
+export const SEASONAL_VARIATIONS: { value: string; label: string }[] = [
+    "No seasonal change",
+    "Higher in the festive season (Oct – Dec)",
+    "Higher in the wedding season",
+    "Lower in summer",
+    "Lower in the monsoon",
+    "Premium in event weeks",
+    "Other — noted on the card",
+].map((words) => ({ value: words, label: words }));
+
+/** The keys the rate card step stored before LF-2, for a draft saved then. */
+const OLD_SEASONAL_KEYS = new Map<string, string>([
+    ["none", "No seasonal change"],
+    ["festive", "Higher in the festive season (Oct – Dec)"],
+    ["wedding", "Higher in the wedding season"],
+    ["summer", "Lower in summer"],
+    ["monsoon", "Lower in the monsoon"],
+    ["events", "Premium in event weeks"],
+    ["other", "Other — noted on the card"],
+]);
 
 export const OPERATING_HOURS: { value: string; label: string; from: string; to: string }[] = [
     { value: "24h", label: "All day, every day", from: "12 AM", to: "12 AM" },
@@ -339,9 +424,31 @@ const text = (value: string): string | undefined => {
     return trimmed === "" ? undefined : trimmed;
 };
 
+/**
+ * The hours `availableHours*` hold: the visibility window, else hours the
+ * five windows cannot name (kept as they came — before this lot a phone's
+ * "10 AM – 7 PM" was dropped on its way through), else the transit
+ * operating hours, as before. The operating hours have columns of their
+ * own since that lot (`operatingHoursFrom/To`, `operatingHoursOf`), so a
+ * window that outranks them here no longer throws them away.
+ */
+export function hoursPairOf(form: Pick<ListingForm, "visibilityWindow" | "customHours" | "operatingHours">): { from: string; to: string } | null {
+    const window = VISIBILITY_WINDOWS.find((w) => w.key === form.visibilityWindow);
+    if (window) return { from: window.from, to: window.to };
+    if (form.customHours && form.customHours.from && form.customHours.to) return { from: form.customHours.from, to: form.customHours.to };
+    const operating = OPERATING_HOURS.find((w) => w.value === form.operatingHours);
+    return operating ? { from: operating.from, to: operating.to } : null;
+}
+
 function hoursOf(form: ListingForm): { availableHoursFrom?: string; availableHoursTo?: string } {
-    const window = VISIBILITY_WINDOWS.find((w) => w.key === form.visibilityWindow) ?? OPERATING_HOURS.find((w) => w.value === form.operatingHours);
-    return window ? { availableHoursFrom: window.from, availableHoursTo: window.to } : {};
+    const pair = hoursPairOf(form);
+    return pair ? { availableHoursFrom: pair.from, availableHoursTo: pair.to } : {};
+}
+
+/** The transit operating hours in their own columns — kept beside the visibility window, never instead of it. */
+function operatingHoursOf(form: Pick<ListingForm, "operatingHours">): { operatingHoursFrom?: string; operatingHoursTo?: string } {
+    const operating = OPERATING_HOURS.find((w) => w.value === form.operatingHours);
+    return operating ? { operatingHoursFrom: operating.from, operatingHoursTo: operating.to } : {};
 }
 
 export function contentRulesOf(form: ListingForm): { contentCategoryId: string; stance: ContentStance }[] {
@@ -350,8 +457,142 @@ export function contentRulesOf(form: ListingForm): { contentCategoryId: string; 
         .map(([contentCategoryId, stance]) => ({ contentCategoryId, stance }));
 }
 
-export function photosOf(form: ListingForm): { url: string; type: string }[] {
-    return (["front", "left", "right", "wide"] as const).filter((k) => form.photos[k]).map((k) => ({ url: form.photos[k]!.url, type: k.toUpperCase() }));
+/** The photographs in the review's order; each carries its upload row and the moment it was taken when they are known. */
+export function photosOf(form: ListingForm): { url: string; type: string; uploadedFileId?: string; takenAt?: string }[] {
+    return (["front", "left", "right", "wide"] as const)
+        .filter((k) => form.photos[k])
+        .map((k) => {
+            const photo = form.photos[k]!;
+            return { url: photo.url, type: k.toUpperCase(), ...(photo.fileId ? { uploadedFileId: photo.fileId } : {}), ...(photo.takenAt ? { takenAt: photo.takenAt } : {}) };
+        });
+}
+
+/** Whether the spot is a screen — the spot type chosen names one, or its illumination says "Digital" (the flow template's rule) — the pixels are asked only then. */
+export function isDigitalForm(form: Pick<ListingForm, "mediaTypeId" | "illumination">, catalogue: Catalogue | null): boolean {
+    return isDigitalMediaType(catalogue?.mediaTypes.find((m) => m.id === form.mediaTypeId)) || form.illumination.trim().toLowerCase() === "digital";
+}
+
+/** Whether a site question is asked of this form's spot (`siteFieldApplies`, with the screen check off the catalogue). */
+export function siteAsks(fieldId: string, form: Pick<ListingForm, "category" | "mediaTypeId" | "illumination">, catalogue: Catalogue | null): boolean {
+    return siteFieldApplies(fieldId, { category: form.category, digital: isDigitalForm(form, catalogue) });
+}
+
+/**
+ * The site questions' answers as columns — only what was answered, and only
+ * for a spot the question is asked of, so a footfall typed before the
+ * category moved to transit is not filed. All optional; none blocks.
+ */
+export function siteAnswersOf(form: ListingForm, catalogue: Catalogue | null): Record<string, unknown> {
+    const asks = (id: string) => siteAsks(id, form, catalogue);
+    const footfall = asks(SITE_FIELD.footfall) ? wholeNumberOf(form.estimatedDailyFootfall) : undefined;
+    const widthPx = asks(SITE_FIELD.widthPx) ? wholeNumberOf(form.widthPx, 1) : undefined;
+    const heightPx = asks(SITE_FIELD.heightPx) ? wholeNumberOf(form.heightPx, 1) : undefined;
+    return {
+        ...(footfall !== undefined ? { estimatedDailyFootfall: footfall } : {}),
+        ...(asks(SITE_FIELD.traffic) && text(form.trafficGrade) ? { trafficGrade: text(form.trafficGrade) } : {}),
+        ...(asks(SITE_FIELD.visibility) && text(form.visibility) ? { visibility: text(form.visibility) } : {}),
+        ...(asks(SITE_FIELD.elevation) && text(form.elevation) ? { elevation: text(form.elevation) } : {}),
+        ...(widthPx !== undefined ? { widthPx } : {}),
+        ...(heightPx !== undefined ? { heightPx } : {}),
+        ...(asks(SITE_FIELD.vehicleType) && text(form.vehicleType) ? { vehicleType: text(form.vehicleType) } : {}),
+    };
+}
+
+/** The pin's accuracy, in metres to one place, when a GPS fix placed it. */
+function pinAccuracyOf(form: Pick<ListingForm, "location">): { locationAccuracyM?: number } {
+    const accuracy = form.location?.accuracyM;
+    return typeof accuracy === "number" && Number.isFinite(accuracy) && accuracy >= 0 ? { locationAccuracyM: Math.round(accuracy * 10) / 10 } : {};
+}
+
+/* LF-2 (28 Sep 2026): the listing flow's restored questions — one mapping on the website, both apps and the console. */
+
+const AUDIENCE_KEYS = ["ageBand", "genderSplit", "urbanRural", "secProfile", "incomeBracket", "occupation"] as const;
+
+/** The six audience facts as `audienceDemographics` holds them: only the answered ones, the words chosen; null when none is. */
+export function audienceDemographicsOf(form: Pick<ListingForm, "audience">): Record<string, string> | null {
+    const answered = AUDIENCE_KEYS.map((key) => [key, form.audience[key].trim()] as const).filter(([, value]) => value !== "");
+    return answered.length ? Object.fromEntries(answered) : null;
+}
+
+/** A number of days off an option id ("0", "7", …), at least `min`; anything else is no answer. */
+function daysOf(value: string, min: number): number | undefined {
+    const trimmed = value.trim();
+    return /^\d+$/.test(trimmed) && Number(trimmed) >= min ? Number(trimmed) : undefined;
+}
+
+/** The cancellation answer as the two columns hold it: flexible → FLEXIBLE; a number → NOTICE with that many days; none → NONE. */
+export function cancellationOf(notice: string): { cancellationPolicy?: "FLEXIBLE" | "NOTICE" | "NONE"; cancellationNoticeDays?: number } {
+    const answer = notice.trim();
+    if (answer === "flexible") return { cancellationPolicy: "FLEXIBLE" };
+    if (answer === "none") return { cancellationPolicy: "NONE" };
+    const days = daysOf(answer, 1);
+    return days !== undefined ? { cancellationPolicy: "NOTICE", cancellationNoticeDays: days } : {};
+}
+
+/** The columns back into the answer `cancellationOf` reads. */
+function cancellationNoticeOf(listing: Pick<Listing, "cancellationPolicy" | "cancellationNoticeDays">): string {
+    if (listing.cancellationPolicy === "FLEXIBLE") return "flexible";
+    if (listing.cancellationPolicy === "NONE") return "none";
+    const days = listing.cancellationNoticeDays;
+    return (listing.cancellationPolicy === "NOTICE" || !listing.cancellationPolicy) && typeof days === "number" && days > 0 ? String(days) : "";
+}
+
+/** Maximum period, advance notice, cancellation — the booking terms beyond the minimum. */
+function bookingTermsOf(form: ListingForm): Record<string, unknown> {
+    const max = daysOf(form.maxBookingDays, 1);
+    const advance = daysOf(form.advanceBookingDays, 0);
+    return {
+        ...(max !== undefined ? { maxBookingDays: max } : {}),
+        ...(advance !== undefined ? { advanceBookingDays: advance } : {}),
+        ...cancellationOf(form.cancellationNotice),
+    };
+}
+
+/** The rate card's validity (YYYY-MM-DD) and its seasonal note. */
+function rateCardTermsOf(form: ListingForm): Record<string, unknown> {
+    return {
+        ...(text(form.rateCardValidFrom) ? { rateCardValidFrom: text(form.rateCardValidFrom) } : {}),
+        ...(text(form.rateCardValidTo) ? { rateCardValidTo: text(form.rateCardValidTo) } : {}),
+        ...(text(form.rateCardSeasonal) ? { seasonalVariationNote: text(form.rateCardSeasonal) } : {}),
+    };
+}
+
+/** The paper each audience report is filed as. */
+export const AUDIENCE_DOCUMENT_KINDS: Record<keyof ListingForm["audienceDocs"], ListingDocumentKind> = { barc: "AUDIENCE_RATING", footfall: "FOOTFALL_AUDIT" };
+
+export interface DocumentPost {
+    /** What the submit remembers as filed, so a retry does not file it twice. */
+    key: string;
+    kind: ListingDocumentKind;
+    url: string;
+    expiresAt?: string;
+}
+
+/**
+ * Every paper the last step files once the listing exists, one
+ * `POST /supply/listings/:id/documents` each and in this order: the site's
+ * slots for the category, the kinds the flow's documents field added, then
+ * the two audience reports (LF-2). A rights paper carries the term it runs to.
+ */
+export function documentPostsOf(form: ListingForm): DocumentPost[] {
+    const term = form.rightsBasis && form.rightsBasis !== "OWNED" && form.rightsValidUntil ? form.rightsValidUntil : null;
+    const expiry = (kind: ListingDocumentKind) => (term && RIGHTS_PAPERS.has(kind) ? { expiresAt: term } : {});
+    const posts: DocumentPost[] = [];
+    for (const slot of documentSlotsFor(form.category)) {
+        const answer = form.documents[slot.key];
+        if (answer && "url" in answer) posts.push({ key: slot.key, kind: slot.kind, url: answer.url, ...expiry(slot.kind) });
+    }
+    /* FL-1: a paper of a kind the site has no slot for is keyed `kind:<KIND>` by the flow's documents field and filed by that kind. */
+    for (const [key, answer] of Object.entries(form.documents)) {
+        if (!key.startsWith("kind:") || !answer || !("url" in answer)) continue;
+        const kind = key.split(":")[1] as ListingDocumentKind;
+        posts.push({ key, kind, url: answer.url, ...expiry(kind) });
+    }
+    for (const key of ["barc", "footfall"] as const) {
+        const file = form.audienceDocs[key];
+        if (file) posts.push({ key: `audience:${key}`, kind: AUDIENCE_DOCUMENT_KINDS[key], url: file.url });
+    }
+    return posts;
 }
 
 export function toCreateBody(form: ListingForm, catalogue: Catalogue | null): Record<string, unknown> {
@@ -360,12 +601,15 @@ export function toCreateBody(form: ListingForm, catalogue: Catalogue | null): Re
     const rules = contentRulesOf(form);
     const photos = photosOf(form);
     const slots = isDigitalMediaType(catalogue?.mediaTypes.find((m) => m.id === form.mediaTypeId)) ? form.slotsTotal : 1;
+    const audience = audienceDemographicsOf(form);
     return {
         category: form.category,
         title: effectiveTitle(form, catalogue),
         address: form.address.trim(),
-        ...(text(media ? form.coverage || form.city : form.city) ? { city: text(media ? form.coverage || form.city : form.city) } : {}),
-        ...(form.location ? { latitude: form.location.latitude, longitude: form.location.longitude } : {}),
+        /* The listing-data-gaps lot: the coverage (a media outlet's reach, a transit or area spot's ground) is its own column — the city stays the city, never "Bengaluru + 50 km". */
+        ...(text(form.city) ? { city: text(form.city) } : {}),
+        ...(text(form.coverage) ? { coverage: text(form.coverage) } : {}),
+        ...(form.location ? { latitude: form.location.latitude, longitude: form.location.longitude, ...pinAccuracyOf(form) } : {}),
         ...(form.venueTypeId ? { venueTypeId: form.venueTypeId } : {}),
         ...(form.mediaTypeId ? { mediaTypeId: form.mediaTypeId } : {}),
         ...(form.materialId ? { materialId: form.materialId } : {}),
@@ -374,25 +618,90 @@ export function toCreateBody(form: ListingForm, catalogue: Catalogue | null): Re
         ...(text(form.heightFt) ? { heightFt: text(form.heightFt) } : {}),
         ...(text(form.illumination) ? { illumination: text(form.illumination) } : {}),
         ...(text(form.facing) ? { facing: text(form.facing) } : {}),
+        ...(form.installationByAdx ? { installationByAdx: true } : {}),
+        ...siteAnswersOf(form, catalogue),
         ...(text(form.vehicleNumber) ? { vehicleNumber: normalisePlate(form.vehicleNumber) } : {}),
+        ...(text(form.vehicleModel) ? { vehicleModel: text(form.vehicleModel) } : {}),
+        ...(text(form.broadcastLanguage) ? { broadcastLanguage: text(form.broadcastLanguage) } : {}),
+        ...(text(form.contentFormat) ? { contentFormat: text(form.contentFormat) } : {}),
         ...(media && text(form.slotDuration) ? { size: text(form.slotDuration) } : {}),
+        ...(audience ? { audienceDemographics: audience } : {}),
         ...(text(form.description) ? { description: text(form.description) } : {}),
         ...(text(form.targetAudience) ? { targetAudience: text(form.targetAudience) } : {}),
         ...(text(form.uniqueSellingPoint) ? { uniqueSellingPoint: text(form.uniqueSellingPoint) } : {}),
         ...(text(form.footfallNote) ? { footfallNote: text(form.footfallNote) } : {}),
         ...(form.pricingUnit && text(form.basePrice) ? { pricingUnit: form.pricingUnit, basePrice: text(form.basePrice) } : {}),
         ...(Number.isInteger(minDays) && minDays > 0 ? { minBookingDays: minDays } : {}),
-        ...(form.availableYearRound === "yes" ? { availableNow: true } : {}),
-        ...(form.availableYearRound === "no" ? { availableNow: false } : {}),
+        // LF-2: its own column — `availableNow` is the live occupied flag the planner filters on and orders flip.
+        ...(form.availableYearRound === "yes" ? { availableYearRound: true } : {}),
+        ...(form.availableYearRound === "no" ? { availableYearRound: false } : {}),
+        /* "Available to book now?" opens on yes, the column's default — so only a "no" needs saying. */
+        ...(form.availableNow === false ? { availableNow: false } : {}),
+        ...bookingTermsOf(form),
         ...(text(form.availableFrom) ? { availableFrom: text(form.availableFrom) } : {}),
         ...hoursOf(form),
+        ...operatingHoursOf(form),
         ...(text(form.peakPeriodNote) ? { peakPeriodNote: text(form.peakPeriodNote) } : {}),
+        ...(form.instantBooking ? { instantBooking: true } : {}),
         ...(form.rateCard ? { rateCardUrl: form.rateCard.url } : {}),
+        ...rateCardTermsOf(form),
         ...(form.rightsBasis ? { rightsBasis: form.rightsBasis } : {}),
         ...(form.rightsBasis && form.rightsBasis !== "OWNED" && text(form.rightsValidUntil) ? { rightsValidUntil: text(form.rightsValidUntil) } : {}),
         ...(slots > 1 ? { slotsTotal: slots } : {}),
         ...(rules.length ? { contentRules: rules } : {}),
         ...(photos.length ? { photos } : {}),
+    };
+}
+
+/* ── The answers that used to be thrown away (listing-data-gaps lot) ─────── */
+
+/** "Not applicable" / "I am the owner" on a paper, as the listing keeps it: the kind, and which paper and what was said. ADX stamps when. */
+export function documentWaiversOf(form: Pick<ListingForm, "category" | "documents">): { kind: ListingDocumentKind; reason: string }[] {
+    return documentSlotsFor(form.category).flatMap((slot) => {
+        const answer = form.documents[slot.key];
+        return answer && "waived" in answer && answer.waived ? [{ kind: slot.kind, reason: `${slot.title}: ${answer.waived}` }] : [];
+    });
+}
+
+/** A stored waiver back onto its slot — by the paper named in the reason, else the only slot of its kind. */
+export function documentsFromWaivers(category: ListingCategory | null, waivers: Listing["documentWaivers"]): ListingForm["documents"] {
+    const out: ListingForm["documents"] = {};
+    if (!Array.isArray(waivers)) return out;
+    const slots = documentSlotsFor(category);
+    for (const waiver of waivers) {
+        if (!waiver || typeof waiver.kind !== "string") continue;
+        const reason = typeof waiver.reason === "string" ? waiver.reason : "";
+        const named = slots.find((s) => s.kind === waiver.kind && reason.startsWith(`${s.title}:`));
+        const ofKind = slots.filter((s) => s.kind === waiver.kind);
+        const slot = named ?? (ofKind.length === 1 ? ofKind[0] : undefined);
+        if (!slot || out[slot.key]) continue;
+        const said = named ? reason.slice(slot.title.length + 1).trim() : reason.trim();
+        out[slot.key] = { waived: said || slot.waiver || "Not applicable" };
+    }
+    return out;
+}
+
+/**
+ * What the create says beside `toCreateBody`'s columns — the answers a
+ * listing used to lose on its way to the server, in the backend's LD-1
+ * shapes (ADX stamps the moments):
+ *
+ *   - the review's tick → `termsAccepted: true` (+ `termsVersion`, the flow it was ticked on);
+ *   - "I own the venue" (rights held as OWNED) → `ownershipDeclared: true`;
+ *   - a paper marked "Not applicable" / "I am the owner" → `documentWaivers: [{ kind, reason }]`;
+ *   - every flow answer no column takes (`context.extraAnswers`, labelled by the flow) → `extraAnswers`.
+ *
+ * Kept apart from `toCreateBody`, whose body the parity tests hold; the
+ * wizard merges the two. Each only when there is something to say.
+ */
+export function declarationsBody(form: ListingForm, context: { termsVersion?: string | null; extraAnswers?: ExtraAnswer[] } = {}): Record<string, unknown> {
+    const waivers = documentWaiversOf(form);
+    const extras = context.extraAnswers ?? [];
+    return {
+        ...(form.extra[TERMS_FIELD] === true ? { termsAccepted: true, ...(context.termsVersion ? { termsVersion: context.termsVersion } : {}) } : {}),
+        ...(form.rightsBasis === "OWNED" ? { ownershipDeclared: true } : {}),
+        ...(waivers.length ? { documentWaivers: waivers } : {}),
+        ...(extras.length ? { extraAnswers: extras } : {}),
     };
 }
 
@@ -422,24 +731,40 @@ export function isEditSection(value: string): value is EditSection {
  * not here: a spot at a different address is a different spot, and the
  * backend's patch has no such fields.
  */
-export function patchFor(section: EditSection, form: ListingForm): Record<string, unknown> {
+export function patchFor(section: EditSection, form: ListingForm, catalogue: Catalogue | null = null): Record<string, unknown> {
     const minDays = Number(form.minBookingDays);
     switch (section) {
         case "details":
+            /* A transit listing's details page is the vehicle page — before this lot its registration, model and hours went nowhere from here. */
+            if (form.category === "TRANSIT") return patchFor("vehicle", form, catalogue);
             return {
+                /* The site questions this spot is asked (the pixels only once the catalogue names the type a screen). */
+                ...siteAnswersOf(form, catalogue),
+                ...(text(form.coverage) ? { coverage: text(form.coverage) } : {}),
                 ...(text(form.title) ? { title: text(form.title) } : {}),
                 ...(text(form.placement) ? { placement: text(form.placement) } : {}),
                 ...(text(form.widthFt) ? { widthFt: text(form.widthFt) } : {}),
                 ...(text(form.heightFt) ? { heightFt: text(form.heightFt) } : {}),
                 ...(text(form.illumination) ? { illumination: text(form.illumination) } : {}),
                 ...(text(form.facing) ? { facing: text(form.facing) } : {}),
+                /* LF-2: the tick is drawn for a fixed spot, so its state is the answer — an untick clears it. */
+                ...(form.category === "INDOOR" || form.category === "OUTDOOR" ? { installationByAdx: form.installationByAdx } : {}),
+                /* LF-2: a media listing's details are its outlet. */
+                ...(text(form.broadcastLanguage) ? { broadcastLanguage: text(form.broadcastLanguage) } : {}),
+                ...(text(form.contentFormat) ? { contentFormat: text(form.contentFormat) } : {}),
+                ...(form.category === "MEDIA" && text(form.slotDuration) ? { size: text(form.slotDuration) } : {}),
             };
         case "vehicle":
             return {
                 ...(text(form.title) ? { title: text(form.title) } : {}),
                 ...(text(form.vehicleNumber) ? { vehicleNumber: normalisePlate(form.vehicleNumber) } : {}),
+                ...siteAnswersOf({ ...form, category: "TRANSIT" }, catalogue),
+                ...(text(form.coverage) ? { coverage: text(form.coverage) } : {}),
+                ...(text(form.vehicleModel) ? { vehicleModel: text(form.vehicleModel) } : {}),
                 ...(text(form.placement) ? { placement: text(form.placement) } : {}),
+                /* The vehicle page asks the operating hours: their own columns, and — as before — the hours when no window outranks them. */
                 ...hoursOf(form),
+                ...operatingHoursOf(form),
             };
         case "description":
             return {
@@ -448,12 +773,18 @@ export function patchFor(section: EditSection, form: ListingForm): Record<string
                 ...(text(form.uniqueSellingPoint) ? { uniqueSellingPoint: text(form.uniqueSellingPoint) } : {}),
                 ...(text(form.footfallNote) ? { footfallNote: text(form.footfallNote) } : {}),
             };
+        case "audience": {
+            /* The two reports are papers, filed through `/supply` by the page; the six facts are the column. */
+            const audience = audienceDemographicsOf(form);
+            return audience ? { audienceDemographics: audience } : {};
+        }
         case "terms":
             return {
-                ...(form.availableYearRound === "yes" ? { availableNow: true } : {}),
-                ...(form.availableYearRound === "no" ? { availableNow: false } : {}),
+                ...(form.availableYearRound === "yes" ? { availableYearRound: true } : {}),
+                ...(form.availableYearRound === "no" ? { availableYearRound: false } : {}),
                 ...hoursOf(form),
                 ...(Number.isInteger(minDays) && minDays > 0 ? { minBookingDays: minDays } : {}),
+                ...bookingTermsOf(form),
             };
         case "price":
             return {
@@ -464,7 +795,7 @@ export function patchFor(section: EditSection, form: ListingForm): Record<string
                 ...(text(form.peakPeriodNote) ? { peakPeriodNote: text(form.peakPeriodNote) } : {}),
             };
         case "ratecard":
-            return form.rateCard ? { rateCardUrl: form.rateCard.url } : {};
+            return { ...(form.rateCard ? { rateCardUrl: form.rateCard.url } : {}), ...rateCardTermsOf(form) };
         case "rules":
             return { contentRules: contentRulesOf(form) };
         default:
@@ -484,56 +815,132 @@ export function formFromListing(listing: Listing, rules: { contentCategoryId: st
     form.placement = listing.placement ?? "";
     form.address = listing.address ?? "";
     form.city = listing.city ?? "";
-    form.location = listing.latitude !== null && listing.longitude !== null ? { latitude: listing.latitude, longitude: listing.longitude } : null;
+    form.location = listing.latitude !== null && listing.longitude !== null ? { latitude: listing.latitude, longitude: listing.longitude, ...(typeof listing.locationAccuracyM === "number" ? { accuracyM: listing.locationAccuracyM } : {}) } : null;
     form.widthFt = listing.widthFt ? String(Number(listing.widthFt)) : "";
     form.heightFt = listing.heightFt ? String(Number(listing.heightFt)) : "";
     form.illumination = listing.illumination ?? "";
     form.facing = listing.facing ?? "";
+    form.installationByAdx = listing.installationByAdx === true;
+    /* The site questions: a code opens its select; words stored before the codes existed are matched to one, or offered as they are. */
+    form.estimatedDailyFootfall = typeof listing.estimatedDailyFootfall === "number" ? String(listing.estimatedDailyFootfall) : "";
+    form.trafficGrade = siteCodeOf(TRAFFIC_GRADES, listing.trafficGrade);
+    form.visibility = siteCodeOf(VISIBILITY_RANGES, listing.visibility);
+    form.elevation = siteCodeOf(ELEVATIONS, listing.elevation);
+    form.widthPx = typeof listing.widthPx === "number" ? String(listing.widthPx) : "";
+    form.heightPx = typeof listing.heightPx === "number" ? String(listing.heightPx) : "";
+    form.vehicleType = siteCodeOf(VEHICLE_KINDS, listing.vehicleType);
     form.vehicleNumber = listing.vehicleNumber ?? "";
+    form.vehicleModel = listing.vehicleModel ?? "";
+    form.broadcastLanguage = listing.broadcastLanguage ?? "";
+    form.contentFormat = listing.contentFormat ?? "";
     form.slotDuration = listing.category === "MEDIA" ? (listing.size ?? "") : "";
-    form.coverage = listing.category === "MEDIA" ? (listing.city ?? "") : "";
+    /* Its own column since the listing-data-gaps lot; a media listing filed before it kept the coverage in the city. */
+    form.coverage = listing.coverage ?? (listing.category === "MEDIA" && listing.coverage === undefined ? (listing.city ?? "") : "");
     form.description = listing.description ?? "";
     form.targetAudience = listing.targetAudience ?? "";
     form.uniqueSellingPoint = listing.uniqueSellingPoint ?? "";
     form.footfallNote = listing.footfallNote ?? "";
-    form.availableYearRound = listing.availableNow ? "yes" : listing.availableFrom ? "no" : "";
+    /* LF-2: the profile the flow writes — words under the six keys; older shares (numbers, or a list) answer none of these selects. */
+    const profile: Record<string, unknown> = listing.audienceDemographics && !Array.isArray(listing.audienceDemographics) ? listing.audienceDemographics : {};
+    for (const key of AUDIENCE_KEYS) {
+        const value = profile[key];
+        if (typeof value === "string") form.audience[key] = value;
+    }
+    /* LF-2: "Available year-round?" is its own column — never `availableNow`, the live occupied flag. */
+    form.availableYearRound = listing.availableYearRound === true ? "yes" : listing.availableYearRound === false ? "no" : "";
+    form.availableNow = listing.availableNow !== false;
     form.visibilityWindow = visibilityWindowOf(listing.availableHoursFrom, listing.availableHoursTo);
-    form.operatingHours = OPERATING_HOURS.find((w) => w.from === listing.availableHoursFrom && w.to === listing.availableHoursTo)?.value ?? "";
+    /* Their own columns since the listing-data-gaps lot; before, a transit listing's operating hours were its hours. */
+    const operatingFrom = listing.operatingHoursFrom ?? listing.availableHoursFrom;
+    const operatingTo = listing.operatingHoursFrom ? listing.operatingHoursTo : listing.availableHoursTo;
+    form.operatingHours = OPERATING_HOURS.find((w) => w.from === operatingFrom && w.to === operatingTo)?.value ?? "";
+    /* Hours none of the choices name are shown and kept as they are, not cleared by the next save. */
+    form.customHours = !form.visibilityWindow && !form.operatingHours && listing.availableHoursFrom && listing.availableHoursTo ? { from: listing.availableHoursFrom, to: listing.availableHoursTo } : null;
     form.minBookingDays = listing.minBookingDays ? String(listing.minBookingDays) : "";
+    form.maxBookingDays = typeof listing.maxBookingDays === "number" && listing.maxBookingDays > 0 ? String(listing.maxBookingDays) : "";
+    form.advanceBookingDays = typeof listing.advanceBookingDays === "number" && listing.advanceBookingDays >= 0 ? String(listing.advanceBookingDays) : "";
+    form.cancellationNotice = cancellationNoticeOf(listing);
+    form.instantBooking = listing.instantBooking === true;
     form.pricingUnit = (listing.pricingUnit as PricingUnit) ?? "";
     form.basePrice = listing.basePrice ? String(Number(listing.basePrice)) : listing.ratePerDay ? String(Number(listing.ratePerDay)) : "";
     form.availableFrom = listing.availableFrom ? listing.availableFrom.slice(0, 10) : "";
     form.peakPeriodNote = listing.peakPeriodNote ?? "";
     form.slotsTotal = listing.slotsTotal ?? 1;
     form.rateCard = listing.rateCardUrl ? { url: listing.rateCardUrl, name: fileNameOf(listing.rateCardUrl) } : null;
+    form.rateCardValidFrom = isoDay(listing.rateCardValidFrom);
+    form.rateCardValidTo = isoDay(listing.rateCardValidTo);
+    form.rateCardSeasonal = listing.seasonalVariationNote ?? "";
     form.contentRules = Object.fromEntries(rules.map((r) => [r.contentCategoryId, r.stance]));
     const photos = listing.photos ?? [];
     const pick = (type: string, index: number) => photos.find((p) => p.type?.toUpperCase() === type) ?? (photos.every((p) => !["FRONT", "LEFT", "RIGHT", "WIDE"].includes(p.type?.toUpperCase())) ? photos[index] : undefined);
-    form.photos = {
-        front: pick("FRONT", 0) ? { url: pick("FRONT", 0)!.url, name: fileNameOf(pick("FRONT", 0)!.url) } : null,
-        left: pick("LEFT", 1) ? { url: pick("LEFT", 1)!.url, name: fileNameOf(pick("LEFT", 1)!.url) } : null,
-        right: pick("RIGHT", 2) ? { url: pick("RIGHT", 2)!.url, name: fileNameOf(pick("RIGHT", 2)!.url) } : null,
-        wide: pick("WIDE", 3) ? { url: pick("WIDE", 3)!.url, name: fileNameOf(pick("WIDE", 3)!.url) } : null,
+    const stored = (type: string, index: number): StoredFile | null => {
+        const photo = pick(type, index);
+        return photo ? { url: photo.url, name: fileNameOf(photo.url), ...(photo.uploadedFileId ? { fileId: photo.uploadedFileId } : {}), ...(photo.takenAt ? { takenAt: photo.takenAt } : {}) } : null;
     };
+    form.photos = { front: stored("FRONT", 0), left: stored("LEFT", 1), right: stored("RIGHT", 2), wide: stored("WIDE", 3) };
     form.rightsBasis = listing.rightsBasis ?? "";
     form.rightsValidUntil = listing.rightsValidUntil ? listing.rightsValidUntil.slice(0, 10) : "";
     form.ownVenue = listing.rightsBasis === "OWNED";
+    /* The papers marked "Not applicable" / "I am the owner" come back onto their slots, so the documents page shows them and a save keeps them. */
+    form.documents = documentsFromWaivers(listing.category, listing.documentWaivers);
     /* The latest document of each kind fills the slot that asks for that kind. */
     const slots = documentSlotsFor(listing.category);
     for (const slot of slots) {
         const latest = documents.find((d) => d.kind === slot.kind && !form.documents[slot.key] && !Object.values(form.documents).some((v) => v && "url" in v && v.url === d.url));
         if (latest) form.documents[slot.key] = { url: latest.url, name: fileNameOf(latest.url) };
     }
+    /* LF-2: the latest audience report of each kind, so the audience page shows what is on file and does not file it twice. */
+    for (const key of ["barc", "footfall"] as const) {
+        const latest = documents.find((d) => d.kind === AUDIENCE_DOCUMENT_KINDS[key]);
+        if (latest) form.audienceDocs[key] = { url: latest.url, name: fileNameOf(latest.url) };
+    }
     return form;
 }
 
+/** The name a stored file is shown under. ST-2: a private file's URL ends in its id, which names nothing a person would recognise. */
+export const PRIVATE_DOCUMENT_NAME = "Private document";
+
 export function fileNameOf(url: string): string {
+    if (isPrivateFileUrl(url)) return PRIVATE_DOCUMENT_NAME;
     try {
         const path = new URL(url, "http://x").pathname;
         return decodeURIComponent(path.split("/").pop() || url);
     } catch {
         return url.split("/").pop() || url;
     }
+}
+
+/* ── The apps' shapes for a pin and a photograph's row ─────────────────── */
+
+/** A pin from the apps' `{ latitude, longitude, accuracyM? }` (an older phone's `accuracy` read too). */
+export function pointFromAnswer(value: unknown): GeoPoint | null {
+    const point = value as { latitude?: unknown; longitude?: unknown; accuracyM?: unknown; accuracy?: unknown } | null | undefined;
+    if (!point || typeof point.latitude !== "number" || !Number.isFinite(point.latitude) || typeof point.longitude !== "number" || !Number.isFinite(point.longitude)) return null;
+    const accuracy = typeof point.accuracyM === "number" ? point.accuracyM : typeof point.accuracy === "number" ? point.accuracy : null;
+    return { latitude: point.latitude, longitude: point.longitude, ...(accuracy !== null && Number.isFinite(accuracy) && accuracy >= 0 ? { accuracyM: accuracy } : {}) };
+}
+
+type PhotoMeta = { uploadedFileId?: string | null; takenAt?: string | null };
+
+/** The apps' `photo_meta` — `{ [url]: { uploadedFileId, takenAt } }` — off the form's photographs; null when none carries any. */
+export function photoMetaOf(photos: ListingForm["photos"]): Record<string, PhotoMeta> | null {
+    const meta: Record<string, PhotoMeta> = {};
+    for (const photo of Object.values(photos)) {
+        if (photo && (photo.fileId || photo.takenAt)) meta[photo.url] = { ...(photo.fileId ? { uploadedFileId: photo.fileId } : {}), ...(photo.takenAt ? { takenAt: photo.takenAt } : {}) };
+    }
+    return Object.keys(meta).length ? meta : null;
+}
+
+/** The photographs with the apps' `photo_meta` put back on them, by URL. */
+export function withPhotoMeta(photos: ListingForm["photos"], meta: unknown): ListingForm["photos"] {
+    if (!meta || typeof meta !== "object") return photos;
+    const rows = meta as Record<string, PhotoMeta | undefined>;
+    const put = (photo: StoredFile | null): StoredFile | null => {
+        const row = photo ? rows[photo.url] : undefined;
+        if (!photo || !row) return photo;
+        return { ...photo, ...(typeof row.uploadedFileId === "string" && row.uploadedFileId ? { fileId: row.uploadedFileId } : {}), ...(typeof row.takenAt === "string" && row.takenAt ? { takenAt: row.takenAt } : {}) };
+    };
+    return { front: put(photos.front), left: put(photos.left), right: put(photos.right), wide: put(photos.wide) };
 }
 
 /* ── Drafts: the whole form, and the phone's answers when a draft came from there ── */
@@ -557,10 +964,13 @@ export function formFromDraft(draft: ListingDraft): { form: ListingForm; step: S
     const answers = draft.answers ?? {};
     if (answers.web && typeof answers.web === "object") {
         const form = { ...emptyForm(), ...(answers.web as Partial<ListingForm>) };
+        /* A draft saved before LF-2 kept the seasonal note by key; the column takes the words. */
+        form.rateCardSeasonal = OLD_SEASONAL_KEYS.get(form.rateCardSeasonal) ?? form.rateCardSeasonal;
         return { form, step: isStepKey(draft.stepKey) ? draft.stepKey : "category" };
     }
     const form = emptyForm();
     const str = (key: string) => (typeof answers[key] === "string" ? (answers[key] as string) : "");
+    const fileAt = (key: string): StoredFile | null => (str(key) ? { url: str(key), name: fileNameOf(str(key)) } : null);
     const category = str("category").toUpperCase();
     form.category = ["INDOOR", "OUTDOOR", "TRANSIT", "MEDIA"].includes(category) ? (category as ListingCategory) : null;
     form.venueTypeId = str("venue_type_id") || null;
@@ -570,13 +980,33 @@ export function formFromDraft(draft: ListingDraft): { form: ListingForm; step: S
     form.placement = str("placement");
     form.address = str("address");
     form.city = str("city");
-    const point = answers.location as { latitude?: number; longitude?: number } | undefined;
-    form.location = point && typeof point.latitude === "number" && typeof point.longitude === "number" ? { latitude: point.latitude, longitude: point.longitude } : null;
+    form.location = pointFromAnswer(answers.location);
     form.widthFt = str("width_ft");
     form.heightFt = str("height_ft");
     form.illumination = str("illumination");
     form.facing = str("facing");
+    form.installationByAdx = answers.installation_by_adx === true;
+    const whole = (key: string) => (typeof answers[key] === "number" ? String(answers[key]) : digitsOnly(str(key)));
+    form.estimatedDailyFootfall = whole(SITE_FIELD.footfall);
+    form.trafficGrade = str(SITE_FIELD.traffic);
+    form.visibility = str(SITE_FIELD.visibility);
+    form.elevation = str(SITE_FIELD.elevation);
+    form.widthPx = whole(SITE_FIELD.widthPx);
+    form.heightPx = whole(SITE_FIELD.heightPx);
+    form.vehicleType = str(SITE_FIELD.vehicleType);
+    form.availableNow = answers[SITE_FIELD.availableNow] !== false;
     form.vehicleNumber = str("vehicle_number");
+    form.vehicleModel = str("vehicle_model");
+    form.broadcastLanguage = str("broadcast_language");
+    form.contentFormat = str("content_format");
+    form.coverage = str(SITE_FIELD.coverage);
+    form.slotDuration = str("slot_duration");
+    form.audience = { ageBand: str("age_band"), genderSplit: str("gender_split"), urbanRural: str("urban_rural"), secProfile: str("sec_profile"), incomeBracket: str("income_bracket"), occupation: str("occupation") };
+    form.audienceDocs = { barc: fileAt("barc_report"), footfall: fileAt("footfall_report") };
+    form.availableYearRound = answers.available_year_round === "yes" ? "yes" : answers.available_year_round === "no" ? "no" : "";
+    form.maxBookingDays = str("max_booking_days");
+    form.advanceBookingDays = str("advance_booking_days");
+    form.cancellationNotice = str("cancellation_notice");
     form.description = str("description");
     form.targetAudience = str("target_audience");
     form.uniqueSellingPoint = str("unique_selling_point");
@@ -586,16 +1016,20 @@ export function formFromDraft(draft: ListingDraft): { form: ListingForm; step: S
     form.minBookingDays = str("min_booking_days");
     form.availableFrom = str("available_from");
     form.peakPeriodNote = str("peak_period_note");
+    form.instantBooking = answers.instant_booking === true;
     const hours = answers.available_hours as { from?: string; to?: string } | undefined;
     form.visibilityWindow = visibilityWindowOf(hours?.from, hours?.to);
-    form.rateCard = str("rate_card") ? { url: str("rate_card"), name: fileNameOf(str("rate_card")) } : null;
+    form.customHours = !form.visibilityWindow && typeof hours?.from === "string" && typeof hours?.to === "string" && hours.from && hours.to ? { from: hours.from, to: hours.to } : null;
+    form.rateCard = fileAt("rate_card");
+    form.rateCardValidFrom = str("rate_card_valid_from");
+    form.rateCardValidTo = str("rate_card_valid_to");
+    form.rateCardSeasonal = str("rate_card_seasonal");
     form.rightsBasis = (str("rights_basis") as RightsBasis) || "";
     form.rightsValidUntil = str("rights_valid_until");
     form.ownVenue = form.rightsBasis === "OWNED";
     const rules = answers.content_rules as { contentCategoryId: string; stance: ContentStance }[] | undefined;
     if (Array.isArray(rules)) form.contentRules = Object.fromEntries(rules.map((r) => [r.contentCategoryId, r.stance]));
-    form.photos.front = str("main_photo") ? { url: str("main_photo"), name: fileNameOf(str("main_photo")) } : null;
-    form.photos.wide = str("wide_photo") ? { url: str("wide_photo"), name: fileNameOf(str("wide_photo")) } : null;
+    form.photos = withPhotoMeta({ front: fileAt("main_photo"), left: fileAt("left_photo"), right: fileAt("right_photo"), wide: fileAt("wide_photo") }, answers[PHOTO_META_FIELD]);
     const docs = answers.documents as { kind: string; url: string }[] | undefined;
     if (Array.isArray(docs)) {
         for (const slot of documentSlotsFor(form.category)) {
@@ -605,7 +1039,20 @@ export function formFromDraft(draft: ListingDraft): { form: ListingForm; step: S
     }
     /* Where the phone stopped, by the closest chapter. */
     const phoneStep = draft.stepKey ?? "";
-    const step: StepKey = phoneStep === "venue" ? "venue" : phoneStep === "spot-type" ? "format" : phoneStep === "spot-details" ? "details" : phoneStep === "more-info" ? "description" : phoneStep === "content-rules" ? "rules" : phoneStep === "pricing" ? "pricing" : phoneStep === "documents" ? "documents" : phoneStep === "review" ? "review" : "category";
+    const phoneSteps = new Map<string, StepKey>([
+        ["venue", "venue"],
+        ["spot-type", "format"],
+        ["spot-details", "details"],
+        ["more-info", "description"],
+        ["audience", "audience"],
+        ["content-rules", "rules"],
+        ["terms", "terms"],
+        ["pricing", "pricing"],
+        ["rate-card", "ratecard"],
+        ["documents", "documents"],
+        ["review", "review"],
+    ]);
+    const step: StepKey = phoneSteps.get(phoneStep) ?? "category";
     return { form, step };
 }
 

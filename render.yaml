@@ -17,6 +17,12 @@ services:
         value: https://adx-backendv1.onrender.com/api/v1
       - key: NEXT_PUBLIC_SITE_URL
         value: https://adx.in
+      # The console's address (Studio's "Open from the console" door); same value as the backend's FRONTEND_URL.
+      - key: NEXT_PUBLIC_CONSOLE_URL
+        sync: false
       # Same OAuth web client id as the backend's GOOGLE_CLIENT_ID; empty hides the Google button.
       - key: NEXT_PUBLIC_GOOGLE_CLIENT_ID
+        sync: false
+      # Same Facebook app id as the backend's FACEBOOK_APP_ID and the apps'; empty keeps the button disabled.
+      - key: NEXT_PUBLIC_FACEBOOK_APP_ID
         sync: false

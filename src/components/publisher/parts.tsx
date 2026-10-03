@@ -40,7 +40,7 @@ export function StatusText({ tone, children, className }: { tone: Tone; children
 
 /** The small upper-case chip: READY TO SUBMIT, IN REVIEW, PRIMARY. */
 export function Chip({ tone, children, className }: { tone: Tone; children: React.ReactNode; className?: string }) {
-    return <span className={cn("inline-flex h-[22px] items-center rounded-[4px] px-2 text-[11px] font-semibold uppercase tracking-wide", TONE_CHIP[tone], className)}>{children}</span>;
+    return <span className={cn("inline-flex h-[22px] items-center whitespace-nowrap rounded-[4px] px-2 text-[11px] font-semibold uppercase tracking-wide", TONE_CHIP[tone], className)}>{children}</span>;
 }
 
 /** The dark pill control (All spaces · Published · In review). */

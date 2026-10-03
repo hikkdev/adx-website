@@ -5,22 +5,22 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { PageHeading, Panel } from "@/components/workspace/page-heading";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { brandButton, CardTitle, Cell, DataTable, ErrorNote, Field, inputClass, KeyRow, Loading, outlineButton, Segmented, StatusText, TableRow, TitleCell } from "@/components/publisher/parts";
+import { brandButton, CardTitle, Cell, DataTable, ErrorNote, KeyRow, Loading, outlineButton, quietLink, Segmented, StatusText, TableRow, TitleCell } from "@/components/publisher/parts";
 import { useLoad } from "@/components/publisher/use-load";
+import { WithdrawDialog } from "@/components/publisher-money/withdraw-dialog";
 import { messageOf } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { ENTRY_LABEL, isCredit, publisherMoney, signedAmount, verifiedMethods } from "@/services/publisher-money";
 import {
-    compareMoney,
     formatMoney,
     isPositiveMoney,
     longDate,
     methodLine,
     methodStatus,
     openBlob,
+    pendingClearsBy,
     publisherWorkspace,
     sumMoney,
-    toApiAmount,
     withdrawalStatus,
     type Earnings,
     type PayoutMethod,
@@ -48,23 +48,10 @@ async function readMoney(): Promise<Money> {
         publisherWorkspace.withdrawals().catch(() => [] as Withdrawal[]),
         publisherWorkspace.methods().catch(() => [] as PayoutMethod[]),
         publisherWorkspace.statements().catch(() => [] as Statement[]),
-        publisherWorkspace.entries(10).catch(() => [] as WalletEntry[]),
+        publisherMoney.entries({ limit: 5 }).catch(() => [] as WalletEntry[]),
     ]);
     return { wallet, earnings, withdrawals, methods, statements, entries };
 }
-
-const ENTRY_WORDS: Record<string, string> = {
-    EARNING: "Campaign day earned",
-    BONUS: "Bonus",
-    REFERRAL: "Referral reward",
-    PAYOUT: "Paid out to your bank",
-    REFUND: "Refund",
-    ADJUSTMENT: "Adjustment",
-    GOODWILL_CREDIT: "Goodwill credit",
-    PENALTY: "Penalty",
-    EXPIRY: "Expired credit",
-    TOPUP: "Top-up",
-};
 
 export default function EarningsPage() {
     return (
@@ -75,10 +62,12 @@ export default function EarningsPage() {
 }
 
 /**
- * DR 12 · 10 · 13 · Earnings (5204:90526): the payout history (every
- * withdrawal, pending or paid), what is still clearing, the receiving
- * account — and the doors the platform needs beside them: withdrawing what
- * has cleared, the monthly statements with their PDFs, and the ledger.
+ * DR 12 · 10 · 13 · Earnings (5204:90526) with the app's wallet on it: the
+ * payout history, what is still clearing, what is held and already asked
+ * for, the daily cap and what is left of it today, withdrawing only to an
+ * account ADX has checked, the latest wallet movements (all of them on
+ * Transactions), and the monthly statements with their PDFs, the monthly
+ * breakdown and the GST invoice (on Statements).
  */
 function EarningsView() {
     const router = useRouter();
@@ -94,18 +83,26 @@ function EarningsView() {
     const rows = data.withdrawals.filter((w) => tab === "ALL" || withdrawalStatus(w.status).shelf === tab);
     const paidToDate = sumMoney(data.withdrawals.filter((w) => w.status === "PAID").map((w) => w.netAmount)) ?? "0.00";
     const primary = data.methods.find((m) => m.isDefault) ?? data.methods[0] ?? null;
-    const pending = data.wallet?.pendingClearance ?? data.earnings?.summary.pendingClearance ?? "0.00";
-    const withdrawable = data.wallet?.withdrawable ?? "0.00";
-    const frozen = !!data.wallet?.frozenAt;
+    const checked = verifiedMethods(data.methods);
+    const wallet = data.wallet;
+    const allowance = wallet?.allowance ?? null;
+    const pending = wallet?.pendingClearance ?? data.earnings?.summary.pendingClearance ?? "0.00";
+    const clearsBy = pendingClearsBy(data.earnings);
+    const frozen = !!wallet?.frozenAt;
 
     return (
         <>
             <PageHeading
                 title="Earnings"
                 actions={
-                    <Link href="/publisher/earnings/bank" className={outlineButton}>
-                        Manage bank account
-                    </Link>
+                    <>
+                        <Link href="/publisher/earnings/transactions" className={outlineButton}>
+                            Transactions
+                        </Link>
+                        <Link href="/publisher/earnings/statements" className={outlineButton}>
+                            Statements
+                        </Link>
+                    </>
                 }
             />
             {error && (
@@ -114,8 +111,33 @@ function EarningsView() {
                 </div>
             )}
 
-            <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_268px]">
+            <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_300px]">
                 <div className="min-w-0">
+                    {wallet && (
+                        <Panel className="mb-8">
+                            <p className="text-sm text-dim">Your balance</p>
+                            <p className="mt-1 text-3xl font-semibold tracking-tight text-ink">{formatMoney(wallet.balance, { paise: "always" })}</p>
+                            <div className="mt-4 grid gap-3 rounded-lg bg-ground p-4 sm:grid-cols-2">
+                                <div>
+                                    <p className="text-lg font-semibold text-ink">{formatMoney(wallet.withdrawable)}</p>
+                                    <p className="text-xs text-dim">Cleared — you can withdraw this</p>
+                                </div>
+                                <div className="sm:border-l sm:border-line sm:pl-4">
+                                    <p className="text-lg font-semibold text-ink">{formatMoney(wallet.pendingClearance)}</p>
+                                    <p className="text-xs text-dim">Still clearing{clearsBy ? ` · all clear by ${longDate(clearsBy)}` : ""}</p>
+                                </div>
+                            </div>
+                            {(isPositiveMoney(wallet.openWithdrawals) || isPositiveMoney(wallet.held) || isPositiveMoney(wallet.goodwill)) && (
+                                <div className="mt-3">
+                                    {isPositiveMoney(wallet.openWithdrawals) && <KeyRow label="Already asked for · with ADX, waiting to be approved" value={formatMoney(wallet.openWithdrawals)} className="py-1.5" />}
+                                    {isPositiveMoney(wallet.held) && <KeyRow label="Held against a booking · reserved until it is settled" value={formatMoney(wallet.held)} className="py-1.5" />}
+                                    {isPositiveMoney(wallet.goodwill) && <KeyRow label="ADX credit · spendable on ADX, never withdrawn" value={formatMoney(wallet.goodwill)} className="py-1.5" />}
+                                </div>
+                            )}
+                            <p className="mt-3 text-xs text-dim">Each campaign-day is credited once the day is over, and can be withdrawn seven days later.{wallet.lastActivityAt ? ` Last movement ${longDate(wallet.lastActivityAt)}.` : ""}</p>
+                        </Panel>
+                    )}
+
                     <section aria-labelledby="payouts-heading">
                         <h2 id="payouts-heading" className="text-base font-semibold text-ink">
                             Payout history
@@ -139,7 +161,7 @@ function EarningsView() {
                             {rows.length === 0 ? (
                                 <Panel>
                                     <p className="text-sm font-medium text-ink">{data.withdrawals.length === 0 ? "No payouts yet" : tab === "PENDING" ? "Nothing pending" : "Nothing paid yet"}</p>
-                                    <p className="mt-1 text-sm text-dim">{data.withdrawals.length === 0 ? "Earnings clear into your wallet as campaigns run. Withdraw them to your bank account from here." : ""}</p>
+                                    {data.withdrawals.length === 0 && <p className="mt-1 text-sm text-dim">Earnings clear into your wallet as campaigns run. Withdraw them to your bank account from here.</p>}
                                 </Panel>
                             ) : (
                                 <DataTable columns={[{ label: "Payout" }, { label: "Amount", align: "right" }, { label: "Status" }, { label: "", align: "right" }]}>
@@ -170,15 +192,52 @@ function EarningsView() {
                         </div>
                     </section>
 
-                    <section className="mt-8">
-                        <h2 className="text-base font-semibold text-ink">How payouts work</h2>
-                        <p className="mt-1 text-sm text-dim">Each campaign day is credited to your wallet the next morning and clears seven days later. A payout is a request to move cleared money to your bank; ADX reviews every request before it is released.</p>
+                    <section className="mt-8" aria-labelledby="activity-heading">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <h2 id="activity-heading" className="text-base font-semibold text-ink">
+                                Recent activity
+                            </h2>
+                            <Link href="/publisher/earnings/transactions" className={quietLink}>
+                                See all transactions
+                            </Link>
+                        </div>
+                        <div className="mt-4">
+                            {data.entries.length === 0 ? (
+                                <Panel>
+                                    <p className="text-sm text-dim">Nothing has moved through this wallet yet. Your first earnings appear the day after your first campaign day.</p>
+                                </Panel>
+                            ) : (
+                                <DataTable columns={[{ label: "Date" }, { label: "Entry" }, { label: "Amount", align: "right" }, { label: "Balance after", align: "right" }]}>
+                                    {data.entries.map((entry) => (
+                                        <TableRow key={entry.id}>
+                                            <Cell>
+                                                <span className="whitespace-nowrap text-dim">{longDate(entry.createdAt)}</span>
+                                            </Cell>
+                                            <Cell className="max-w-[300px]">
+                                                <TitleCell title={ENTRY_LABEL[entry.type] ?? entry.type.toLowerCase().replace(/_/g, " ")} line={entry.note ?? entry.reference} />
+                                            </Cell>
+                                            <Cell align="right">
+                                                <span className={cn("whitespace-nowrap", isCredit(entry) ? "text-success" : "text-ink")}>{signedAmount(entry)}</span>
+                                            </Cell>
+                                            <Cell align="right">
+                                                <span className="whitespace-nowrap text-dim">{formatMoney(entry.balanceAfter, { paise: "always" })}</span>
+                                            </Cell>
+                                        </TableRow>
+                                    ))}
+                                </DataTable>
+                            )}
+                        </div>
                     </section>
 
                     <section id="statements" className="mt-8 scroll-mt-24" aria-labelledby="statements-heading">
-                        <h2 id="statements-heading" className="text-base font-semibold text-ink">
-                            Statements
-                        </h2>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <h2 id="statements-heading" className="text-base font-semibold text-ink">
+                                Statements
+                            </h2>
+                            <Link href="/publisher/earnings/statements" className={quietLink}>
+                                Monthly breakdown and GST invoices
+                            </Link>
+                        </div>
                         <p className="mt-1 text-sm text-dim">A payment advice for every month, as a PDF.</p>
                         <div className="mt-4">
                             {data.statements.length === 0 ? (
@@ -187,7 +246,7 @@ function EarningsView() {
                                 </Panel>
                             ) : (
                                 <DataTable columns={[{ label: "Period" }, { label: "Credits", align: "right" }, { label: "Debits", align: "right" }, { label: "Closing balance", align: "right" }, { label: "", align: "right" }]}>
-                                    {data.statements.map((statement) => (
+                                    {data.statements.slice(0, 6).map((statement) => (
                                         <StatementRow key={statement.id} statement={statement} />
                                     ))}
                                 </DataTable>
@@ -195,67 +254,55 @@ function EarningsView() {
                         </div>
                     </section>
 
-                    {data.entries.length > 0 && (
-                        <section className="mt-8" aria-labelledby="activity-heading">
-                            <h2 id="activity-heading" className="text-base font-semibold text-ink">
-                                Recent activity
-                            </h2>
-                            <p className="mt-1 text-sm text-dim">The last {data.entries.length} entries on your wallet.</p>
-                            <div className="mt-4">
-                                <DataTable columns={[{ label: "Date" }, { label: "Entry" }, { label: "Amount", align: "right" }, { label: "Balance after", align: "right" }]}>
-                                    {data.entries.map((entry) => (
-                                        <TableRow key={entry.id}>
-                                            <Cell>
-                                                <span className="whitespace-nowrap text-dim">{longDate(entry.createdAt)}</span>
-                                            </Cell>
-                                            <Cell>
-                                                <TitleCell title={ENTRY_WORDS[entry.type] ?? entry.type.toLowerCase().replace(/_/g, " ")} line={entry.note ?? entry.reference} />
-                                            </Cell>
-                                            <Cell align="right">
-                                                <span className={cn("whitespace-nowrap", entry.amount.startsWith("-") ? "text-ink" : "text-success")}>{formatMoney(entry.amount)}</span>
-                                            </Cell>
-                                            <Cell align="right">
-                                                <span className="whitespace-nowrap text-dim">{formatMoney(entry.balanceAfter)}</span>
-                                            </Cell>
-                                        </TableRow>
-                                    ))}
-                                </DataTable>
-                            </div>
-                        </section>
-                    )}
+                    <section className="mt-8">
+                        <h2 className="text-base font-semibold text-ink">How payouts work</h2>
+                        <p className="mt-1 text-sm text-dim">Each campaign day is credited to your wallet the next morning and clears seven days later. A payout is a request to move cleared money to your bank; ADX reviews every request by hand before it is released, and an approved one reaches your account within 24 hours.</p>
+                    </section>
                 </div>
 
                 <div className="grid content-start gap-6">
                     <Panel>
                         <CardTitle>Pending earnings</CardTitle>
                         <p className="mt-2 text-2xl font-semibold text-ink">{formatMoney(pending)}</p>
-                        <p className="mt-2 text-sm text-dim">Eligible for payout after the campaign is completed and delivery is verified.</p>
+                        <p className="mt-2 text-sm text-dim">Clears day by day, seven days after each campaign-day is credited.</p>
                         <div className="mt-4 border-t border-line pt-3">
-                            <KeyRow label="Available to withdraw" value={formatMoney(withdrawable)} strong className="py-1" />
-                            {data.wallet && isPositiveMoney(data.wallet.openWithdrawals) && <KeyRow label="In open requests" value={formatMoney(data.wallet.openWithdrawals)} className="py-1" />}
+                            <KeyRow label="Available to withdraw" value={formatMoney(wallet?.withdrawable ?? "0.00")} strong className="py-1" />
+                            {wallet && isPositiveMoney(wallet.held) && <KeyRow label="Held" value={formatMoney(wallet.held)} className="py-1" />}
+                            {wallet && isPositiveMoney(wallet.openWithdrawals) && <KeyRow label="In open requests" value={formatMoney(wallet.openWithdrawals)} className="py-1" />}
+                            {allowance && (
+                                <>
+                                    <KeyRow label="Most you can ask for now" value={formatMoney(allowance.maximum)} className="py-1" />
+                                    <KeyRow label="Daily cap" value={formatMoney(allowance.dailyCap)} className="py-1" />
+                                    <KeyRow label="Left today" value={formatMoney(allowance.remainingToday)} className="py-1" />
+                                </>
+                            )}
                         </div>
                         {frozen ? (
-                            <p className="mt-3 rounded-md bg-warning-soft px-3 py-2 text-xs text-warning">Withdrawals are paused on this wallet{data.wallet?.frozenReason ? `: ${data.wallet.frozenReason}` : ""}. Contact support.</p>
+                            <p className="mt-3 rounded-md bg-warning-soft px-3 py-2 text-xs text-warning">Withdrawals are paused on this wallet{wallet?.frozenReason ? `: ${wallet.frozenReason}` : ""}. Your earnings still land; contact support to lift it.</p>
                         ) : (
-                            <button type="button" onClick={() => setWithdrawOpen(true)} disabled={!data.wallet || !isPositiveMoney(withdrawable) || primary === null} className={cn(brandButton, "mt-4 w-full")}>
+                            <button type="button" onClick={() => setWithdrawOpen(true)} disabled={!wallet} className={cn(brandButton, "mt-4 w-full")}>
                                 Withdraw
                             </button>
                         )}
-                        {!frozen && primary === null && <p className="mt-2 text-xs text-dim">Add a bank account to withdraw.</p>}
+                        {!frozen && checked.length === 0 && <p className="mt-2 text-xs text-dim">{data.methods.length === 0 ? "Add a bank account or UPI id to withdraw." : "ADX is still checking your payout account; withdrawals open once it is done."}</p>}
                     </Panel>
 
                     <Panel>
                         <CardTitle>Receiving account</CardTitle>
                         <p className="mt-2 text-base font-medium text-ink">{methodLine(primary)}</p>
-                        {primary && <StatusText tone={methodStatus(primary.status).tone} className="mt-1 block">{methodStatus(primary.status).label}</StatusText>}
+                        {primary && (
+                            <StatusText tone={methodStatus(primary.status).tone} className="mt-1 block">
+                                {methodStatus(primary.status).label}
+                            </StatusText>
+                        )}
                         <Link href="/publisher/earnings/bank" className={cn(outlineButton, "mt-4")}>
-                            {primary ? "Manage account" : "Add bank details"}
+                            {primary ? "Manage accounts" : "Add bank details"}
                         </Link>
                     </Panel>
                 </div>
             </div>
 
-            {data.wallet && <WithdrawDialog open={withdrawOpen} onClose={() => setWithdrawOpen(false)} wallet={data.wallet} methods={data.methods} onDone={reload} />}
+            {wallet && withdrawOpen && <WithdrawDialog open={withdrawOpen} onClose={() => setWithdrawOpen(false)} wallet={wallet} methods={data.methods} onDone={reload} />}
         </>
     );
 }
@@ -294,83 +341,5 @@ function StatementRow({ statement }: { statement: Statement }) {
                 </button>
             </Cell>
         </TableRow>
-    );
-}
-
-/** `POST /payouts/withdrawals` — the amount and the account; the server re-checks every rule shown here. */
-function WithdrawDialog({ open, onClose, wallet, methods, onDone }: { open: boolean; onClose: () => void; wallet: WalletSnapshot; methods: PayoutMethod[]; onDone: () => void }) {
-    const usable = methods.filter((m) => m.status === "VERIFIED");
-    const fallback = usable.length > 0 ? usable : methods;
-    const [amount, setAmount] = React.useState(wallet.allowance?.maximum ?? wallet.withdrawable);
-    const [methodId, setMethodId] = React.useState(fallback.find((m) => m.isDefault)?.id ?? fallback[0]?.id ?? "");
-    const [busy, setBusy] = React.useState(false);
-    const [failure, setFailure] = React.useState<string | null>(null);
-    const allowance = wallet.allowance;
-    const maximum = allowance?.maximum ?? wallet.withdrawable;
-    const minimum = allowance?.minimum ?? "0.00";
-
-    const submit = async (event: React.FormEvent) => {
-        event.preventDefault();
-        const value = toApiAmount(amount);
-        if (!value || !isPositiveMoney(value)) return setFailure("Enter an amount in rupees.");
-        if (compareMoney(value, minimum) < 0) return setFailure(`The minimum withdrawal is ${formatMoney(minimum)}.`);
-        if (compareMoney(value, maximum) > 0) return setFailure(`You can withdraw up to ${formatMoney(maximum)} right now.`);
-        if (!methodId) return setFailure("Choose the account to send it to.");
-        setBusy(true);
-        setFailure(null);
-        try {
-            await publisherWorkspace.requestWithdrawal(value, methodId);
-            toast.success(`Withdrawal of ${formatMoney(value)} requested`);
-            onDone();
-            onClose();
-        } catch (caught) {
-            setFailure(messageOf(caught, "Could not request the withdrawal."));
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    return (
-        <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-            <DialogContent className="max-w-[480px] rounded-lg border-line p-6">
-                <DialogHeader>
-                    <DialogTitle className="text-lg font-semibold text-ink">Withdraw to your bank</DialogTitle>
-                    <DialogDescription className="text-sm text-dim">
-                        {formatMoney(wallet.withdrawable)} has cleared. {allowance ? `Minimum ${formatMoney(minimum)} · up to ${formatMoney(maximum)} today.` : ""} ADX reviews every request before it is released.
-                    </DialogDescription>
-                </DialogHeader>
-                <form onSubmit={submit} className="grid gap-4">
-                    <Field label="Amount" htmlFor="withdraw-amount">
-                        <div className="relative">
-                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-dim">₹</span>
-                            <input id="withdraw-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} className={cn(inputClass, "pl-7")} />
-                        </div>
-                    </Field>
-                    <Field label="Send to" htmlFor="withdraw-method">
-                        <select id="withdraw-method" value={methodId} onChange={(event) => setMethodId(event.target.value)} className={inputClass}>
-                            {fallback.map((method) => (
-                                <option key={method.id} value={method.id}>
-                                    {methodLine(method)}
-                                    {method.status !== "VERIFIED" ? ` (${methodStatus(method.status).label.toLowerCase()})` : ""}
-                                </option>
-                            ))}
-                        </select>
-                    </Field>
-                    {failure && (
-                        <p role="alert" className="text-sm text-danger">
-                            {failure}
-                        </p>
-                    )}
-                    <div className="flex justify-end gap-3">
-                        <button type="button" onClick={onClose} className={outlineButton}>
-                            Cancel
-                        </button>
-                        <button type="submit" disabled={busy} className={brandButton}>
-                            {busy ? "Requesting…" : "Request payout"}
-                        </button>
-                    </div>
-                </form>
-            </DialogContent>
-        </Dialog>
     );
 }

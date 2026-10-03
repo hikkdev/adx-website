@@ -32,7 +32,8 @@ export default {
                 ink: "#141518",
                 paper: "#eeeae2",
                 line: "#eaeae7",
-                brand: { DEFAULT: "#bd2020", bright: "#e32227", soft: "#fce9e8" },
+                /* The three reds; Settings › Brand & theme may retune them through these variables (root layout), else DR 12's own. */
+                brand: { DEFAULT: "rgb(var(--brand-rgb, 189 32 32) / <alpha-value>)", bright: "rgb(var(--brand-bright-rgb, 227 34 39) / <alpha-value>)", soft: "rgb(var(--brand-soft-rgb, 252 233 232) / <alpha-value>)" },
                 dim: "#77787d",
                 ground: "#f8f8f6",
             },

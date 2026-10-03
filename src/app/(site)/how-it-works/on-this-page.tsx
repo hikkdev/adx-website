@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePageHref } from "@/lib/site-links";
 import { cn } from "@/lib/utils";
 
 export interface PageAnchor {
@@ -16,6 +17,7 @@ export interface PageAnchor {
  * viewport, so the rail follows the reader down the page.
  */
 export function OnThisPage({ anchors }: { anchors: PageAnchor[] }) {
+    const href = usePageHref();
     const [active, setActive] = React.useState(anchors[0]?.id ?? "");
 
     React.useEffect(() => {
@@ -54,7 +56,7 @@ export function OnThisPage({ anchors }: { anchors: PageAnchor[] }) {
             <div className="py-[18px]">
                 <p className="text-sm font-medium leading-5 text-dim">
                     Need a hand?{" "}
-                    <Link href="/help" className="underline underline-offset-2 hover:text-ink">
+                    <Link href={href("help")} className="underline underline-offset-2 hover:text-ink">
                         Visit the help centre
                     </Link>
                 </p>

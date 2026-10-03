@@ -41,6 +41,74 @@ export interface SessionUser {
     /** ED-1: both stamps. `null` means still to prove; absent on a backend older than the stamps. */
     mobileVerifiedAt?: string | null;
     emailVerifiedAt?: string | null;
+    /** QR-4: the person's own ADX-… id. */
+    displayId?: string | null;
+    /** QR-4/QR-22: the two names — `null` until the basics are answered; absent on a backend older than QR-4, which then asks nothing. */
+    firstName?: string | null;
+    lastName?: string | null;
+    dateOfBirth?: string | null;
+    gender?: string | null;
+    /** QR-6: the terms and privacy consent — `null` until agreed; absent on a backend older than QR-6, which then asks nothing. */
+    consentAcceptedAt?: string | null;
+    /**
+     * The two sides as `/users/me` carries them — only what the sign-up
+     * reads back so it never asks twice (28 Sep 2026): an individual's side
+     * is named after the person, a business's after the business.
+     */
+    advertiserProfile?: SessionParty | null;
+    publisherProfile?: SessionParty | null;
+}
+
+/** A side row, as far as the sign-up reads it. `type` is the side's own legal form (INDIVIDUAL, BUSINESS, COMMERCIAL, NGO…). */
+export interface SessionParty {
+    id?: string;
+    displayId?: string | null;
+    name?: string | null;
+    type?: string | null;
+    companyName?: string | null;
+    mobile?: string | null;
+}
+
+/**
+ * What a signed-in account still owes before a workspace — the apps' order
+ * (App.tsx): the terms before anything, then a side, then the basics.
+ * `null` fields ask; absent ones (an older backend) never do.
+ */
+export type SignupStep = "consent" | "side" | "basics" | "done";
+
+export function signupStepFor(me: Pick<SessionUser, "roles" | "consentAcceptedAt" | "firstName"> & Partial<Pick<SessionUser, "lastName">>): SignupStep {
+    if (me.consentAcceptedAt === null) return "consent";
+    const hasSide = me.roles.includes("PUBLISHER") || me.roles.includes("ADVERTISER");
+    if (!hasSide) return "side";
+    if (owesBasics(me)) return "basics";
+    return "done";
+}
+
+/**
+ * QR-22's basics are owed while the first name or the last name is still
+ * missing. The date of birth is not among them (29 Sep 2026, the owner:
+ * "You don't need to be over 18 to use ADX, but you do need to be over 18
+ * to place orders") — it is asked, optionally, beside the names, and again
+ * at the first order. The basics step opens with what the account holds
+ * (`basicsFrom`), so what is asked is only what is missing. A field absent
+ * from the read — a backend older than it — never asks.
+ */
+export function owesBasics(me: Partial<Pick<SessionUser, "firstName" | "lastName">>): boolean {
+    const missing = (value: string | null | undefined) => value === null || (typeof value === "string" && value.trim() === "");
+    return missing(me.firstName) || missing(me.lastName);
+}
+
+/**
+ * What a workspace still waits on once the email is proved and the side is
+ * held (29 Sep 2026): QR-6's consent — a legal step, on every side — and
+ * then QR-22's basics, which the print partner's workspace does not ask
+ * (its app asks none). Both are answered on `/choose-workspace`, which sends
+ * the person back to the page they came from. Null: nothing owed.
+ */
+export function workspaceOwes(me: Partial<Pick<SessionUser, "consentAcceptedAt" | "firstName" | "lastName">>, workspace: "ADVERTISER" | "PUBLISHER" | "PRINT_PARTNER"): "consent" | "basics" | null {
+    if (me.consentAcceptedAt === null) return "consent";
+    if (workspace !== "PRINT_PARTNER" && owesBasics(me)) return "basics";
+    return null;
 }
 
 export interface SessionTokens {
@@ -194,16 +262,22 @@ export const safeNext = (next: string | null | undefined): string | null => (nex
 
 /**
  * Where a just-signed-in account goes. ED-1: an email still to prove comes
- * first (the stamp exists and is null); then the side — none yet means the
- * workspace chooser; then the page that sent them, else that side's home.
+ * first (the stamp exists and is null). A print partner goes to its
+ * workspace — the app checks that role before anything else. Then QR-6's
+ * terms, the side and QR-22's basics, all asked on the workspace chooser;
+ * then the page that sent them, else that side's home.
  */
-export function destinationFor(me: Pick<SessionUser, "roles" | "emailVerifiedAt">, next: string | null | undefined): string {
+export function destinationFor(me: Pick<SessionUser, "roles" | "emailVerifiedAt"> & Partial<Pick<SessionUser, "consentAcceptedAt" | "firstName" | "lastName">>, next: string | null | undefined): string {
     const wanted = safeNext(next);
     const suffix = wanted ? `?next=${encodeURIComponent(wanted)}` : "";
     if (me.emailVerifiedAt === null) return `/verify-email${suffix}`;
     const publisher = me.roles.includes("PUBLISHER");
     const advertiser = me.roles.includes("ADVERTISER");
-    if (!publisher && !advertiser) return `/choose-workspace${suffix}`;
+    // PP-W: a print partner works in the partner workspace — checked first, as the app does.
+    const partner = me.roles.includes("PARTNER");
+    if (partner && !wanted) return "/partner";
+    if (!publisher && !advertiser && !partner) return `/choose-workspace${suffix}`;
+    if (!partner && signupStepFor({ roles: me.roles, consentAcceptedAt: me.consentAcceptedAt, firstName: me.firstName, lastName: me.lastName }) !== "done") return `/choose-workspace${suffix}`;
     if (wanted) return wanted;
     return publisher && !advertiser ? "/publisher" : "/advertiser";
 }
@@ -298,6 +372,40 @@ export const twoFactorService = {
 };
 
 /* ------------------------------------------------------------------ */
+/* The provider doors on offer                                         */
+/* ------------------------------------------------------------------ */
+
+/** `GET /auth/providers` (public): the ids a browser needs, or null for a provider ADX has not set up. */
+export interface AuthProviders {
+    google: { webClientId: string } | null;
+    facebook: { appId: string } | null;
+}
+
+/** What the sign-in card draws: the server's answer first, the site's own build-time id as the fallback. */
+export interface ProviderIds {
+    googleClientId: string | null;
+    facebookAppId: string | null;
+}
+
+const nonEmpty = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+/**
+ * The ids to draw buttons with. A provider the server answers wins; one it
+ * answers null for falls back to the site's own env id; `answer` null (the
+ * read failed) is the env ids alone. No id, no button.
+ */
+export function providerIds(answer: Partial<AuthProviders> | null, fallback: { google?: string | null; facebook?: string | null } = {}): ProviderIds {
+    return {
+        googleClientId: nonEmpty(answer?.google?.webClientId) ?? nonEmpty(fallback.google),
+        facebookAppId: nonEmpty(answer?.facebook?.appId) ?? nonEmpty(fallback.facebook),
+    };
+}
+
+export const providersService = {
+    read: () => api.get<AuthProviders>("/auth/providers", { anonymous: true }),
+};
+
+/* ------------------------------------------------------------------ */
 /* The doors                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -318,6 +426,8 @@ export const authService = {
     /** An ADMIN's challenge may also be answered by SMS or email; this sends that code. */
     sendTwoFactor: (challengeToken: string, method: TwoFactorMethod) => api.post<SendOtpResult & { method: TwoFactorMethod }>("/auth/2fa/send", { challengeToken, method }, { anonymous: true }),
     logout: (refreshToken: string) => api.post<void>("/auth/logout", { refreshToken }),
+    /** Rotates the pair and re-signs the access token with the roles the account holds now — after a side was opened elsewhere. */
+    refresh: (refreshToken: string) => api.post<SessionTokens>("/auth/refresh", { refreshToken }, { anonymous: true }),
     me: () => api.get<SessionUser>("/users/me"),
     /** ED-1: proving the account's own email after a number-first sign-in. */
     sendMyEmailCode: (email: string) => api.post<EmailCodeSent>("/users/me/email/send-code", { email }),

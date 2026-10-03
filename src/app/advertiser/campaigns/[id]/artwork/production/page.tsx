@@ -1,10 +1,13 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { messageOf } from "@/lib/api-client";
+import { FLAG_LANDING_PAGES, useSwitchedOff } from "@/lib/flags";
 import { BookingCard, EditLink, ErrorNote, StepFooter, smallButton } from "@/components/booking/booking-frame";
 import { ChoiceCard, SelectField, TextField } from "@/components/booking/fields";
+import { AddressSuggest } from "@/components/listing-form/address-search";
 import { StepPage, accountNameOf, stepHref, useCampaignId, type ReadyCampaign } from "@/components/booking/step-page";
 import { useListingCards } from "@/components/booking/summary-rail";
 import { TRACKING_LABEL, bookingService, chargesOf, isDigital, rupees, type CampaignPatch, type FulfilmentChoice, type TrackingMethod } from "@/services/booking";
@@ -26,6 +29,7 @@ export default function ProductionPage({ params }: { params: Promise<{ id: strin
 
 function Production({ ready }: { ready: ReadyCampaign }) {
     const router = useRouter();
+    const landingPagesOff = useSwitchedOff(FLAG_LANDING_PAGES);
     const { campaign, review, advertiser } = ready;
     const cards = useListingCards(campaign.spots.map((spot) => spot.listingId));
     const [choice, setChoice] = React.useState<FulfilmentChoice>(campaign.fulfilment ?? "ADX_PRINTS");
@@ -90,7 +94,14 @@ function Production({ ready }: { ready: ReadyCampaign }) {
                                 {TRACKING_LABEL[campaign.trackingMethod]}
                                 {campaign.trackingMethod === "QR_OR_DEEPLINK" && typeof tracking.destinationUrl === "string" ? ` · ${tracking.destinationUrl}` : ""}
                                 {campaign.trackingMethod === "VANITY_OR_PROMO" && typeof tracking.promoCode === "string" ? ` · ${tracking.promoCode}` : ""}
+                                {campaign.trackingMethod === "QR_OR_DEEPLINK" && typeof tracking.destinationUrl !== "string" ? (campaign.landingPage ? ` · your ADX page (${campaign.landingPage.status === "PUBLISHED" ? "published" : "draft"})` : " · ADX thank-you page") : ""}
                             </p>
+                        )}
+                        {/* Lot E: no website of your own — ADX drafts a page from the brief for the codes to land on. */}
+                        {!editingTracking && !landingPagesOff && campaign.trackingMethod === "QR_OR_DEEPLINK" && typeof tracking.destinationUrl !== "string" && (
+                            <Link href={`/advertiser/campaigns/${encodeURIComponent(campaign.id)}/landing-page?next=${encodeURIComponent(stepHref(campaign.id, "artwork/production"))}`} className="mt-1 inline-block text-sm font-medium text-ink underline underline-offset-2 hover:text-brand">
+                                {campaign.landingPage ? "Edit your ADX page" : "No website? Use an ADX page"}
+                            </Link>
                         )}
                     </div>
                     {!editingTracking && <EditLink onClick={() => setEditingTracking(true)} />}
@@ -157,18 +168,33 @@ function TrackingEditor({ method: initial, config, onSave, onCancel }: { method:
                 ))}
             </SelectField>
             {method === "QR_OR_DEEPLINK" && (
-                <div className="grid gap-4 md:grid-cols-2">
-                    <TextField label="Destination URL" value={destinationUrl} onChange={(e) => setDestinationUrl(e.target.value)} placeholder="https://asterhome.example/festive" hint="Leave empty and the scan lands on ADX's own thank-you page." />
-                    <TextField label="UTM campaign tag" value={utm} onChange={(e) => setUtm(e.target.value)} placeholder="aster-festive-oct26" />
+                <div>
+                    {/* Form symmetry: the pair's guidance is one line under the whole row, never under one cell. */}
+                    <div className="grid items-start gap-4 md:grid-cols-2">
+                        <TextField label="Destination URL" value={destinationUrl} onChange={(e) => setDestinationUrl(e.target.value)} placeholder="https://asterhome.example/festive" />
+                        <TextField label="UTM campaign tag" value={utm} onChange={(e) => setUtm(e.target.value)} placeholder="aster-festive-oct26" />
+                    </div>
+                    <p className="mt-1.5 text-xs text-dim">{"Leave the destination URL empty and the scan lands on ADX's own thank-you page."}</p>
                 </div>
             )}
             {method === "VANITY_OR_PROMO" && (
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid items-start gap-4 md:grid-cols-2">
                     <TextField label="Vanity URL" value={vanityUrl} onChange={(e) => setVanityUrl(e.target.value)} placeholder="https://asterhome.example/festive" />
                     <TextField label="Promo code" value={promoCode} onChange={(e) => setPromoCode(e.target.value)} placeholder="FESTIVE20" maxLength={40} />
                 </div>
             )}
-            {method === "LOCATION_LIFT" && <TextField label="Business address" value={businessAddress} onChange={(e) => setBusinessAddress(e.target.value)} placeholder="Whitefield, Bengaluru" hint="Visits over 14 days, against the month before." />}
+            {method === "LOCATION_LIFT" && (
+                <div>
+                    {/* Search only: a pick fills the line — the plan keeps the words, never a pin. */}
+                    <label htmlFor="lift-business-address" className="block text-sm font-medium text-ink">
+                        Business address
+                    </label>
+                    <AddressSuggest value={businessAddress} onChange={setBusinessAddress} onPlace={() => undefined} className="mt-2">
+                        {(input) => <input id="lift-business-address" {...input} className="h-11 w-full rounded-md border border-line bg-white px-3 text-sm text-ink placeholder:text-dim focus:border-ink focus:outline-none" />}
+                    </AddressSuggest>
+                    <p className="mt-1.5 text-xs text-dim">Visits over 14 days, against the month before.</p>
+                </div>
+            )}
             <div className="flex gap-2">
                 <button
                     type="button"

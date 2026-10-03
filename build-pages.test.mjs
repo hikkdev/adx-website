@@ -60,7 +60,9 @@ test('builds a page the site can serve, with the marker that says it is generate
   assert.ok(page.includes('<title>Privacy policy — ADX</title>'));
   assert.ok(page.includes('name="description" content="How ADX handles personal data"'));
   assert.ok(page.includes('Effective 24 September 2026 · version 3.'));
-  assert.ok(page.includes('href="styles.css"'));
+  assert.ok(page.includes('<main class="doc wrap">'));
+  // No chrome of its own: the site's header and footer are drawn around it by the [doc] route.
+  assert.ok(!page.includes('<header') && !page.includes('<footer'));
   assert.ok(page.includes('<p>Body.</p>'));
 });
 

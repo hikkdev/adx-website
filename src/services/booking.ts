@@ -84,6 +84,10 @@ export interface Campaign {
     targetRadiusKm: number | null;
     targetMarket: string | null;
     targetMarkets?: string[];
+    /** True above one market — advisory, never a refusal. */
+    multiMarketWarning?: boolean;
+    /** Lot D (Q138): the seeded content category the artwork falls under. */
+    contentCategoryId?: string | null;
     strategy: CampaignStrategy | null;
     persona: AudiencePersona | null;
     triggerType: TriggerType;
@@ -117,6 +121,8 @@ export interface Campaign {
     designQuoteNote?: string | null;
     designQuotedAt?: string | null;
     designQuoteRespondedAt?: string | null;
+    /** E11-2: the ADX page, narrowly — whether there is one and whether it is live; null when there is none. */
+    landingPage?: { id: string; slug: string; status: "DRAFT" | "PUBLISHED" | string; url: string; publishedAt: string | null } | null;
 }
 
 export interface MissingAnswer {
@@ -203,6 +209,7 @@ export type CampaignPatch = Partial<{
     targetRadiusKm: number | null;
     targetMarket: string | null;
     targetMarkets: string[];
+    contentCategoryId: string | null;
     strategy: CampaignStrategy | null;
     persona: AudiencePersona | null;
     budget: string | null;
@@ -213,6 +220,7 @@ export type CampaignPatch = Partial<{
     creative:
         | { creativePath: "STATIC_IMAGES" }
         | { creativePath: "VIDEO_OR_MOTION" }
+        | { creativePath: "DYNAMIC_HTML5"; creativeConfig?: { endpointUrl: string; refreshSeconds: number } }
         | { creativePath: "ADX_DESIGN_AGENCY"; creativeConfig?: { objective: string; keyMessage: string; style: string } };
     tracking:
         | { trackingMethod: "NONE" }
@@ -280,6 +288,37 @@ export interface AgreementTemplate {
     content?: string | null;
 }
 
+/** DS-3: the insertion order's accept answers a signing request instead of a click when the policy asks for a signature. */
+export type InsertionOrderAnswer =
+    | { accepted: true; templateVersion: number; acceptanceId: string }
+    | { accepted: false; signing: { id: string; status: string; signingUrl: string | null; mock: boolean } };
+
+/** What `POST /campaigns/:id/authorize` answers — the campaign paid from the wallet, booked, its codes minted. */
+export interface AuthorizeResult {
+    campaign: Campaign;
+    review: CampaignReview;
+    failedSpots: { spotId: string; title: string; reason: string }[];
+    incentive: { id: string; amount: string } | null;
+    codes: { id: string; spotId: string | null; code: string; url: string; promoCode: string | null }[];
+    invoice?: { id: string; number: string; kind: string; status: string } | null;
+}
+
+export interface WalletView {
+    balance: string;
+    goodwill: string;
+    held: string;
+    spendable: string;
+    currency: string;
+}
+
+/** One e-signing request, as `GET /agreements/signing/:id` (and its refresh) answers it — the fields the pay step reads. */
+export interface SigningRequestView {
+    id: string;
+    status: "REQUESTED" | "PARTIALLY_SIGNED" | "COMPLETED" | "EXPIRED" | "CANCELLED" | "FAILED" | string;
+    signingUrl: string | null;
+    mock: boolean;
+}
+
 export interface UploadedFile {
     id: string;
     url: string;
@@ -325,9 +364,14 @@ export const bookingService = {
         const rows = await api.get<unknown>("/advertisers/industries");
         return Array.isArray(rows) ? (rows as string[]).filter((r) => typeof r === "string") : [];
     },
-    acceptInsertionOrder: (advertiserId: string, campaignId: string) => api.post<unknown>(`/advertisers/${encodeURIComponent(advertiserId)}/agreements/insertion-order`, { campaignId }),
+    acceptInsertionOrder: (advertiserId: string, campaignId: string) => api.post<InsertionOrderAnswer>(`/advertisers/${encodeURIComponent(advertiserId)}/agreements/insertion-order`, { campaignId }),
     acceptPlatformAgreement: (advertiserId: string) => api.post<unknown>(`/advertisers/${encodeURIComponent(advertiserId)}/agreements/platform`, {}),
     agreement: (kind: "INSERTION_ORDER" | "ADVERTISER_PLATFORM") => api.get<AgreementTemplate | null>(`/agreements/current/${kind}`),
+    /** Pay from the ADX wallet: the total is held now and charged when the campaign starts. 403 SIGNATURE_REQUIRED carries the open request. */
+    authorize: (id: string) => api.post<AuthorizeResult>(`/campaigns/${encodeURIComponent(id)}/authorize`, {}),
+    wallet: (advertiserId: string) => api.get<WalletView>(`/advertisers/${encodeURIComponent(advertiserId)}/wallet`),
+    /** DS-1: ask ADX to ask Digio where the request stands now — the pay step's "I have signed". */
+    refreshSigning: (requestId: string) => api.post<SigningRequestView>(`/agreements/signing/${encodeURIComponent(requestId)}/refresh`, {}),
 
     /**
      * The cart becomes a campaign: a draft, its flight and market from the
@@ -528,6 +572,48 @@ export function estimateCart(lines: { ratePerDay: string | null; print: boolean 
 export const briefMissing = (review: Pick<CampaignReview, "missing">): MissingAnswer[] =>
     review.missing.filter((item) => item.field !== "AGREEMENT_REQUIRED" && item.field !== "SIGNATURE_REQUIRED");
 
+/** The standing for one agreement kind off the review, or null on a read from before the gate. */
+export const agreementStanding = (review: Pick<CampaignReview, "agreements"> | null | undefined, kind: string): AgreementStanding | null =>
+    review?.agreements?.find((a) => a.kind === kind) ?? null;
+
+/** DS-3: whether the insertion order must be e-signed and is not yet. */
+export const signatureWanted = (review: Pick<CampaignReview, "signing"> | null | undefined): boolean => Boolean(review?.signing?.required && !review.signing.satisfied);
+
+/** A signing request still waiting on the signer. */
+export const signingOpen = (status: string | null | undefined): boolean => status === "REQUESTED" || status === "PARTIALLY_SIGNED";
+
+/** The e-sign page, with the way back to where the person was. */
+export const signHref = (requestId: string, next: string): string => `/sign/${encodeURIComponent(requestId)}?next=${encodeURIComponent(next)}`;
+
+/** The request a 403 SIGNATURE_REQUIRED refusal carries, or null for any other error. */
+export function signingFromError(caught: unknown): string | null {
+    if (!(caught instanceof ApiError) || caught.code !== "SIGNATURE_REQUIRED") return null;
+    const details = (caught.details ?? {}) as { signing?: { id?: string } | null };
+    return details.signing?.id ?? null;
+}
+
+/**
+ * The schedule the server prints into an insertion order's `{{spots}}` —
+ * the same lines, so the text read before the click is the text recorded.
+ */
+export function renderSchedule(
+    campaign: { reference: string; name: string; startDate: string | null; endDate: string | null },
+    spots: { title: string; city: string | null; ratePerDay: string; days: number; quantity: number; lineTotal: string }[]
+): string {
+    const day = (value: string | null) => (value ? value.slice(0, 10) : "—");
+    const lines = spots.map((spot, index) => `${index + 1}. ${spot.title}${spot.city ? `, ${spot.city}` : ""} — ₹${spot.ratePerDay}/day × ${spot.days} day${spot.days === 1 ? "" : "s"} × ${spot.quantity} = ₹${spot.lineTotal}`);
+    return [`Campaign ${campaign.reference} — ${campaign.name}`, `Flight: ${day(campaign.startDate)} to ${day(campaign.endDate)}`, "", ...lines].join("\n");
+}
+
+/** The body with its schedule in place, the way the server's renderer does it. */
+export function withSchedule(body: string, schedule: string | null): string {
+    if (!schedule) return body;
+    return body.includes("{{spots}}") ? body.replace("{{spots}}", schedule) : `${body}\n\n## Sites covered by this insertion order\n\n${schedule}`;
+}
+
+/** The text of a template, whichever field the server filled. */
+export const templateText = (template: Pick<AgreementTemplate, "body" | "content"> | null | undefined): string => template?.body ?? template?.content ?? "";
+
 /** Whether the insertion order stands accepted on the version live now. */
 export const insertionOrderAccepted = (review: Pick<CampaignReview, "agreements">): boolean =>
     review.agreements?.find((a) => a.kind === "INSERTION_ORDER")?.current ?? true;
@@ -616,18 +702,12 @@ export function stepOf(campaign: Pick<Campaign, "name" | "spots" | "creativePath
 
 export const STEP_ROUTES = ["details", "spaces", "artwork", "review"] as const;
 
-/** The billing address the backend holds is one line; the pincode rides at its end. */
+/** A billing address line saved before AD-1 carried the PIN at its end; the street without it, and the PIN it held. */
 export function splitBillingAddress(address: string | null | undefined): { street: string; postalCode: string } {
     const value = (address ?? "").trim();
     const match = /^(.*?)[,\s]*(\d{6})$/.exec(value);
     if (match) return { street: match[1]!.trim().replace(/,$/, ""), postalCode: match[2]! };
     return { street: value, postalCode: "" };
-}
-
-export function joinBillingAddress(street: string, postalCode: string): string {
-    const s = street.trim().replace(/,\s*$/, "");
-    const p = postalCode.trim();
-    return p ? `${s}, ${p}` : s;
 }
 
 export const GSTIN_PATTERN = /^\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z\d]$/;
@@ -676,4 +756,82 @@ export function fileKindLabel(mimeType: string | null | undefined, fileName: str
     if (mimeType === "video/quicktime" || ext === "mov") return "MOV";
     if (mimeType?.startsWith("image/")) return mimeType.slice(6).toUpperCase().replace("JPEG", "JPEG");
     return ext ? ext.toUpperCase() : "File";
+}
+
+/* ------------------------------------------------------------------ */
+/* Agreement text                                                      */
+/* ------------------------------------------------------------------ */
+
+export type TextBlock = { type: "heading"; level: 1 | 2 | 3; text: string } | { type: "paragraph"; text: string } | { type: "list"; ordered: boolean; items: string[] };
+
+/**
+ * The published Markdown as blocks the page draws — headings, paragraphs and
+ * lists, nothing more: the text is ADX's own, and a renderer that knows only
+ * these cannot be made to draw anything else.
+ */
+export function textBlocks(body: string): TextBlock[] {
+    const blocks: TextBlock[] = [];
+    let paragraph: string[] = [];
+    let list: { ordered: boolean; items: string[] } | null = null;
+    const flush = () => {
+        if (paragraph.length) blocks.push({ type: "paragraph", text: paragraph.join(" ") });
+        paragraph = [];
+        if (list) blocks.push({ type: "list", ordered: list.ordered, items: list.items });
+        list = null;
+    };
+    for (const raw of body.replace(/\r\n/g, "\n").split("\n")) {
+        const line = raw.trim();
+        if (!line) {
+            flush();
+            continue;
+        }
+        const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+        if (heading) {
+            flush();
+            blocks.push({ type: "heading", level: heading[1]!.length as 1 | 2 | 3, text: heading[2]!.trim() });
+            continue;
+        }
+        const bullet = /^[-*•]\s+(.*)$/.exec(line);
+        const numbered = /^\d+[.)]\s+(.*)$/.exec(line);
+        if (bullet || numbered) {
+            const ordered = !!numbered;
+            if (paragraph.length) {
+                blocks.push({ type: "paragraph", text: paragraph.join(" ") });
+                paragraph = [];
+            }
+            if (!list || list.ordered !== ordered) {
+                if (list) blocks.push({ type: "list", ordered: list.ordered, items: list.items });
+                list = { ordered, items: [] };
+            }
+            list.items.push((bullet ?? numbered)![1]!.trim());
+            continue;
+        }
+        if (list) {
+            blocks.push({ type: "list", ordered: list.ordered, items: list.items });
+            list = null;
+        }
+        paragraph.push(line);
+    }
+    flush();
+    return blocks;
+}
+
+/** "**bold** and plain" as parts — the one inline mark the templates use. */
+export function boldParts(text: string): { text: string; strong: boolean }[] {
+    const parts: { text: string; strong: boolean }[] = [];
+    const pattern = /\*\*([^*]+)\*\*/g;
+    let last = 0;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+        if (match.index > last) parts.push({ text: text.slice(last, match.index), strong: false });
+        parts.push({ text: match[1]!, strong: true });
+        last = match.index + match[0].length;
+    }
+    if (last < text.length) parts.push({ text: text.slice(last), strong: false });
+    return parts;
+}
+
+/** The live feed's refresh as the server takes it: whole seconds, five at the least, sixty when nothing readable was typed. */
+export function refreshSecondsOf(value: string): number {
+    const n = Math.floor(Number(value.replace(/[^\d]/g, "")));
+    return Number.isFinite(n) && n > 0 ? Math.max(5, n) : 60;
 }

@@ -8,9 +8,11 @@ import { Chip, Divider, LabeledInput, Segmented, ToggleRow } from "@/components/
 import { InlineError, StepActions, TaskCard } from "@/components/planner/planner-shell";
 import type { StepProps } from "@/components/planner/planner-step";
 import { ApiError, messageOf } from "@/lib/api-client";
+import { FLAG_MULTI_MARKET, useFeature } from "@/lib/flags";
 import { cn } from "@/lib/utils";
+import { DEFAULT_MARKET_CAP, marketCapFrom, MULTI_MARKET_NOTE, MULTI_MARKET_UNWARNED_VARIANT } from "@/services/campaigns";
 import {
-    marketPatch,
+    marketsPatch,
     planPrefs,
     plannerHref,
     plannerService,
@@ -153,8 +155,13 @@ function PlaceSearch({
     );
 }
 
-/** The market list (`GET /app/geo/cities?stage=LAUNCHED`): the cities ADX sells in, searchable. */
-function MarketPicker({ value, onChange }: { value: string | null; onChange: (market: string) => void }) {
+/**
+ * The market list (`GET /app/geo/cities?stage=LAUNCHED`): the cities ADX
+ * sells in, searchable. One market is chosen by pressing it; with
+ * `multi-market-campaigns` on, each press ticks or unticks a market and the
+ * chosen ones sit above the list as removable chips.
+ */
+function MarketPicker({ values, onToggle, multi }: { values: string[]; onToggle: (market: string) => void; multi: boolean }) {
     const [query, setQuery] = React.useState("");
     const [result, setResult] = React.useState<{ key: string; rows: PickerCity[] | null; error: string | null }>({ key: "\u0000", rows: null, error: null });
     const typed = query.trim();
@@ -183,19 +190,36 @@ function MarketPicker({ value, onChange }: { value: string | null; onChange: (ma
     const rows = result.key === typed ? result.rows : null;
     return (
         <div>
-            <LabeledInput label="Market" value={query} onChange={setQuery} placeholder="Search a city ADX is live in" autoComplete="off" />
-            {value && <p className="mt-2 text-sm text-ink">Chosen: <span className="font-medium">{value}</span></p>}
+            <LabeledInput label={multi ? "Markets" : "Market"} value={query} onChange={setQuery} placeholder="Search a city ADX is live in" autoComplete="off" />
+            {multi && values.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2" aria-label="Chosen markets">
+                    {values.map((name) => (
+                        <button key={name} type="button" onClick={() => onToggle(name)} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-brand bg-[#fffafa] px-3 text-xs font-semibold text-ink" aria-label={`Remove ${name}`}>
+                            {name}
+                            <X className="size-3.5" aria-hidden />
+                        </button>
+                    ))}
+                </div>
+            ) : (
+                values[0] && (
+                    <p className="mt-2 text-sm text-ink">
+                        Chosen: <span className="font-medium">{values[0]}</span>
+                    </p>
+                )
+            )}
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {rows === null && !result.error && <p className="text-sm text-dim">Loading markets…</p>}
                 {result.error && <p className="text-sm text-dim">{result.error}</p>}
                 {rows?.map((city) => {
-                    const on = value === city.name;
+                    const on = values.includes(city.name);
                     return (
                         <button
                             key={city.slug}
                             type="button"
-                            aria-pressed={on}
-                            onClick={() => onChange(city.name)}
+                            role={multi ? "checkbox" : undefined}
+                            aria-checked={multi ? on : undefined}
+                            aria-pressed={multi ? undefined : on}
+                            onClick={() => onToggle(city.name)}
                             className={cn("flex h-12 items-center justify-between rounded-lg border px-4 text-left text-sm transition-colors", on ? "border-brand bg-[#fffafa] text-ink" : "border-line bg-white text-ink hover:border-ink")}
                         >
                             <span className="truncate">{city.name}</span>
@@ -203,7 +227,7 @@ function MarketPicker({ value, onChange }: { value: string | null; onChange: (ma
                         </button>
                     );
                 })}
-                {rows && rows.length === 0 && <p className="text-sm text-dim">No live market matches “{typed}”.</p>}
+                {rows && rows.length === 0 && <p className="text-sm text-dim">No live market matches “{typed}”. Targeting matches the city a publisher recorded on their listing, so it has to be one ADX has launched.</p>}
             </div>
         </div>
     );
@@ -220,7 +244,37 @@ export function LocationStep({ campaign, save }: StepProps) {
     const [location, setLocation] = React.useState(campaign.targetingMethod === "RADIUS" ? (campaign.targetLocation ?? "") : "");
     const [centre, setCentre] = React.useState<Point | null>(campaign.targetLatitude !== null && campaign.targetLongitude !== null ? { latitude: campaign.targetLatitude, longitude: campaign.targetLongitude } : null);
     const [km, setKm] = React.useState<number>(campaign.targetRadiusKm ?? 10);
-    const [market, setMarket] = React.useState<string | null>(campaign.targetMarket);
+    /* Lot D (Q8): several markets behind `multi-market-campaigns`; the variant decides whether a second one opens the note first. */
+    const multiMarket = useFeature(FLAG_MULTI_MARKET);
+    const multi = multiMarket.enabled;
+    const warned = multiMarket.variant !== MULTI_MARKET_UNWARNED_VARIANT;
+    const [markets, setMarkets] = React.useState<string[]>(() => (campaign.targetMarkets && campaign.targetMarkets.length > 0 ? campaign.targetMarkets : campaign.targetMarket ? [campaign.targetMarket] : []));
+    const chosenMarkets = multi ? markets : markets.slice(0, 1);
+    const [cap, setCap] = React.useState(DEFAULT_MARKET_CAP);
+    const [pendingMarket, setPendingMarket] = React.useState<string | null>(null);
+    const [acknowledged, setAcknowledged] = React.useState((campaign.targetMarkets?.length ?? 0) > 1);
+    const [refusal, setRefusal] = React.useState<string | null>(null);
+
+    const toggleMarket = (name: string) => {
+        setRefusal(null);
+        if (chosenMarkets.includes(name)) {
+            setMarkets(chosenMarkets.filter((held) => held !== name));
+            return;
+        }
+        if (!multi) {
+            setMarkets([name]);
+            return;
+        }
+        if (chosenMarkets.length >= cap) {
+            setRefusal(`A campaign can target at most ${cap} market${cap === 1 ? "" : "s"}. Untick one to add ${name}.`);
+            return;
+        }
+        if (chosenMarkets.length === 1 && !acknowledged && warned) {
+            setPendingMarket(name);
+            return;
+        }
+        setMarkets([...chosenMarkets, name]);
+    };
     const [pois, setPois] = React.useState<CampaignPoi[]>(campaign.pois);
     const [venueText, setVenueText] = React.useState("");
     const [prefs, setPrefs] = React.useState<PlanPrefs>(() => planPrefs.read(campaign.id));
@@ -231,7 +285,7 @@ export function LocationStep({ campaign, save }: StepProps) {
     const firstPin = pois.find((poi) => poi.latitude !== null && poi.longitude !== null);
     const poiNear = React.useMemo<Point | null>(() => (firstPin ? { latitude: firstPin.latitude!, longitude: firstPin.longitude! } : null), [firstPin?.latitude, firstPin?.longitude]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const ready = method === "RADIUS" ? centre !== null && km > 0 : method === "MARKET_OR_DMA" ? Boolean(market) : pois.some((poi) => poi.latitude !== null && poi.longitude !== null);
+    const ready = method === "RADIUS" ? centre !== null && km > 0 : method === "MARKET_OR_DMA" ? chosenMarkets.length > 0 && pendingMarket === null : pois.some((poi) => poi.latitude !== null && poi.longitude !== null);
 
     const submit = async () => {
         if (!ready || busy) return;
@@ -242,12 +296,18 @@ export function LocationStep({ campaign, save }: StepProps) {
                 method === "RADIUS"
                     ? radiusPatch({ location, latitude: centre!.latitude, longitude: centre!.longitude, km })
                     : method === "MARKET_OR_DMA"
-                      ? marketPatch(market!)
+                      ? marketsPatch(chosenMarkets)
                       : poiPatch(pois.filter((poi) => poi.latitude !== null && poi.longitude !== null));
             await save({ ...patch, step: STEP_META.location.appStep });
             router.push(plannerHref(campaign.id, "triggers"));
         } catch (caught) {
-            setError(messageOf(caught, "Could not save the location."));
+            /* The cap the server names replaces the default; a switched-off flag drops the list back to its first market. */
+            if (caught instanceof ApiError) {
+                const named = marketCapFrom(caught.message);
+                if (named !== null) setCap(named);
+                if (caught.code === "FEATURE_OFF") setMarkets((current) => current.slice(0, 1));
+            }
+            setError(caught instanceof ApiError && caught.code === "FEATURE_OFF" ? "More than one market is switched off right now — the campaign keeps its first market. Save again to continue." : messageOf(caught, "Could not save the location."));
             setBusy(false);
         }
     };
@@ -286,8 +346,39 @@ export function LocationStep({ campaign, save }: StepProps) {
 
                 {method === "MARKET_OR_DMA" && (
                     <div className="mt-6">
-                        <MarketPicker value={market} onChange={setMarket} />
-                        <p className="mt-3 text-sm text-dim">The whole city is the target. ADX recommends one market per campaign — different cities mean different languages and habits.</p>
+                        <MarketPicker values={chosenMarkets} onToggle={toggleMarket} multi={multi} />
+                        {refusal && <p className="mt-3 rounded-md bg-warning-soft px-4 py-3 text-sm text-ink">{refusal}</p>}
+                        {pendingMarket && (
+                            <div className="mt-3 rounded-lg border border-[#f5d9a8] bg-warning-soft px-4 py-4">
+                                <p className="text-sm font-semibold text-ink">{MULTI_MARKET_NOTE}.</p>
+                                <p className="mt-1 text-sm text-ink">
+                                    {chosenMarkets[0] ?? "Your market"} and {pendingMarket} would run as one campaign with one piece of artwork and one report. Two campaigns report separately.
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    <button type="button" onClick={() => setPendingMarket(null)} className="inline-flex h-10 items-center rounded-md bg-brand px-4 text-sm font-semibold text-white hover:bg-[#a51b1b]">
+                                        Keep one market
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setMarkets([...chosenMarkets, pendingMarket]);
+                                            setAcknowledged(true);
+                                            setPendingMarket(null);
+                                        }}
+                                        className="inline-flex h-10 items-center rounded-md border border-line bg-white px-4 text-sm font-semibold text-ink hover:border-ink"
+                                    >
+                                        Add {pendingMarket} anyway
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        <p className="mt-3 text-sm text-dim">
+                            {multi && chosenMarkets.length > 1
+                                ? `${chosenMarkets.length} markets: ${chosenMarkets.join(", ")}. ${MULTI_MARKET_NOTE}.`
+                                : multi
+                                  ? `Up to ${cap} market${cap === 1 ? "" : "s"} per campaign. Spaces are matched inside each city you tick, and the campaign reports by market.`
+                                  : "The whole city is the target. One market per campaign — spaces are matched inside a single city. Run a second campaign for a second market; both report separately."}
+                        </p>
                     </div>
                 )}
 

@@ -156,27 +156,13 @@ ${MARKER}
   <title>${escapeHtml(title)} — ADX</title>
   <meta name="description" content="${escapeHtml(description ?? '')}">
   <link rel="icon" href="brand/adx-icon-tile.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="site">
-    <div class="wrap">
-      <a href="./"><img src="brand/adx-wordmark-red.svg" alt="ADX"></a>
-      <nav><a href="terms.html">Terms</a><a href="refund.html">Refunds</a><a href="contact.html">Contact</a></nav>
-    </div>
-  </header>
-
   <main class="doc wrap">
     <h1>${escapeHtml(title)}</h1>
     ${when ? `<p class="meta">Effective ${when}${version ? ` · version ${version}` : ''}.</p>` : ''}
     ${bodyHtml}
   </main>
-
-  <footer class="site">
-    <div class="wrap">
-      <p>© ${new Date().getFullYear()} Keysquare Technologies Pvt Ltd. <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a> · <a href="refund.html">Refunds</a> · <a href="contact.html">Contact</a></p>
-    </div>
-  </footer>
 </body>
 </html>
 `;
@@ -203,7 +189,8 @@ async function mayWrite(file) {
 }
 
 async function writePage(file, html, results) {
-  // The site is a Next.js app now: pressed pages live in public/, served as plain files at their old addresses.
+  // The site is a Next.js app: a pressed page lives in public/<slug>.html and is served at /<slug>
+  // by the (site)/[doc] route, inside the site's header and footer; the .html address redirects there.
   const target = path.join(HERE, 'public', file);
   if (!(await mayWrite(target))) {
     results.skipped.push(`${file} (hand-written — publish its slug from the console to take it over)`);

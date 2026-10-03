@@ -3,6 +3,7 @@
 import * as React from "react";
 import { BookingCard, EditLink, KeyRows, StepFooter } from "@/components/booking/booking-frame";
 import { ItemisedCharges } from "@/components/booking/charges";
+import { ClashList } from "@/components/booking/clash-hint";
 import { StepPage, stepHref, useCampaignId, type ReadyCampaign } from "@/components/booking/step-page";
 import { kindLineOf, useListingCards } from "@/components/booking/summary-rail";
 import {
@@ -111,14 +112,14 @@ function Review({ ready }: { ready: ReadyCampaign }) {
                                 labelWidth="w-[130px]"
                                 rows={[
                                     { label: "Method", value: TRACKING_LABEL[campaign.trackingMethod] },
-                                    ...(campaign.trackingMethod === "QR_OR_DEEPLINK" ? [{ label: "Destination URL", value: tracking.destinationUrl ?? "ADX thank-you page" }, { label: "UTM campaign tag", value: tracking.utmCampaign ?? "—" }] : []),
+                                    ...(campaign.trackingMethod === "QR_OR_DEEPLINK" ? [{ label: "Destination URL", value: tracking.destinationUrl ?? (campaign.landingPage ? `Your ADX page (${campaign.landingPage.status === "PUBLISHED" ? "published" : "draft — publish it before launch"})` : "ADX thank-you page") }, { label: "UTM campaign tag", value: tracking.utmCampaign ?? "—" }] : []),
                                     ...(campaign.trackingMethod === "VANITY_OR_PROMO" ? [{ label: "Vanity URL", value: tracking.vanityUrl ?? "—" }, { label: "Promo code", value: tracking.promoCode ?? "—" }] : []),
                                     ...(campaign.trackingMethod === "LOCATION_LIFT" ? [{ label: "Business address", value: tracking.businessAddress ?? "—" }] : []),
                                     { label: "Launch gate", value: launchGate },
                                 ]}
                             />
                         </Section>
-                        <Section title="Artwork and publisher review" edit={stepHref(campaign.id, campaign.creativePath === "ADX_DESIGN_AGENCY" ? "artwork" : "artwork/files")}>
+                        <Section title="Artwork and publisher review" edit={stepHref(campaign.id, campaign.creativePath === "ADX_DESIGN_AGENCY" || campaign.creativePath === "DYNAMIC_HTML5" ? "artwork" : "artwork/files")}>
                             <ul className="space-y-1.5 text-sm text-ink">
                                 {campaign.creativePath === "ADX_DESIGN_AGENCY" && (
                                     <li>
@@ -132,7 +133,15 @@ function Review({ ready }: { ready: ReadyCampaign }) {
                                                 : "separate quote before design work begins"}
                                     </li>
                                 )}
+                                {campaign.creativePath === "DYNAMIC_HTML5" && (
+                                    <li>
+                                        Served live from{" "}
+                                        {typeof campaign.creativeConfig?.endpointUrl === "string" ? <span className="break-all">{campaign.creativeConfig.endpointUrl}</span> : <span className="text-brand">no endpoint yet</span>}
+                                        {typeof campaign.creativeConfig?.refreshSeconds === "number" ? ` · refreshed every ${campaign.creativeConfig.refreshSeconds} s` : ""}
+                                    </li>
+                                )}
                                 {campaign.creativePath !== "ADX_DESIGN_AGENCY" &&
+                                    campaign.creativePath !== "DYNAMIC_HTML5" &&
                                     campaign.spots.map((spot) => {
                                         const creative = creativeFor(campaign.creatives, spot.id);
                                         const digital = isDigital({ display: cards[spot.listingId]?.display, mediaTypeName: spot.listing.mediaType?.name });
@@ -175,7 +184,14 @@ function Review({ ready }: { ready: ReadyCampaign }) {
                     </ul>
                 </div>
             )}
-            {review && review.clashes.length > 0 && <p className="mt-4 rounded-md border border-[#f3c1c1] bg-[#fdf2f2] px-4 py-3 text-sm text-[#b42318]">{review.clashes.map((c) => c.title).join(", ")} no longer {review.clashes.length === 1 ? "has" : "have"} a slot on these dates. Remove them on the Ad spaces step or change the dates.</p>}
+            {review && review.clashes.length > 0 && (
+                <div className="mt-4 rounded-md border border-[#f3c1c1] bg-[#fdf2f2] px-4 py-3">
+                    <p className="text-sm text-[#b42318]">
+                        {review.clashes.map((c) => c.title).join(", ")} no longer {review.clashes.length === 1 ? "has" : "have"} a slot on these dates. Remove them on the Ad spaces step or change the dates.
+                    </p>
+                    <ClashList className="mt-3" clashes={review.clashes} length={days} quantityOf={(spotId) => review.lines.find((l) => l.spotId === spotId)?.quantity} campaignDates={{ from: campaign.startDate, to: campaign.endDate }} />
+                </div>
+            )}
 
             <StepFooter className="mt-6" back={{ href: stepHref(campaign.id, "artwork/production"), label: "Back" }} next={{ label: "Continue to billing", href: stepHref(campaign.id, "review/billing"), disabled: !review || missing.length > 0 || review.clashes.length > 0 }} />
         </>

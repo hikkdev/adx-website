@@ -1,14 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { Laptop, Smartphone } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, ChevronRight, Laptop, Smartphone } from "lucide-react";
 import { messageOf } from "@/lib/api-client";
+import { useAuth } from "@/lib/auth";
 import { Switch } from "@/components/ui/switch";
 import { AuthenticatorSetup } from "@/components/auth/authenticator-setup";
+import { ADDRESS_LINE_PLACEHOLDER, AddressFinder, fillFromPlace, PIN_PATTERN, PIN_PLACEHOLDER } from "@/components/listing-form/address-search";
 import { btnSmall, HeaderCard, inputClass, StatusChip } from "@/components/advertiser/bits";
 import { EMAIL_CODE_LENGTH, normaliseCode } from "@/services/auth";
 import {
     advertiserWorkspace,
+    companyNameOf,
     describeSession,
     groupEnabled,
     groupRows,
@@ -25,6 +29,8 @@ import {
     type TwoFactorStatus,
     type UserProfile,
 } from "@/services/advertiser-workspace";
+import { ACCOUNT_ID_LABEL, ADX_ID_LABEL } from "@/services/party";
+import { nameParts, namesPatch } from "@/services/account";
 
 /* ------------------------------------------------------------------ */
 /* Profile                                                             */
@@ -33,17 +39,23 @@ import {
 /**
  * Frame 09's Profile card: the name (`PATCH /users/me`), the email proved
  * with a code (`POST /users/me/email/send-code` → `/verify`), the masked
- * phone, and the role line.
+ * phone, and the role line. 29 Sep 2026: the frame's "Full name" is asked
+ * as the two names the account keeps — saved together, the display name
+ * composed from them by the server — so it can never drift from them.
  */
 export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserProfile; advertiser: AdvertiserProfile | null; onChanged: () => void }) {
-    const [name, setName] = React.useState(profile.name ?? "");
+    const { refresh } = useAuth();
+    const savedNames = React.useMemo(() => nameParts(profile), [profile]);
+    const [firstName, setFirstName] = React.useState(savedNames.firstName);
+    const [lastName, setLastName] = React.useState(savedNames.lastName);
     const [email, setEmail] = React.useState(profile.email ?? "");
     const [code, setCode] = React.useState("");
     const [sent, setSent] = React.useState<{ email: string; devOtp?: string; resendAfterSeconds: number } | null>(null);
     const [busy, setBusy] = React.useState<null | "name" | "send" | "verify">(null);
     const [note, setNote] = React.useState<{ tone: "ok" | "bad"; text: string } | null>(null);
 
-    const nameChanged = name.trim() !== (profile.name ?? "").trim() && name.trim().length > 0;
+    const names = namesPatch(savedNames, { firstName, lastName });
+    const nameChanged = Object.keys(names).length > 0;
     const emailChanged = email.trim().toLowerCase() !== (profile.email ?? "").trim().toLowerCase();
     const verified = !!profile.emailVerifiedAt && !emailChanged && !!profile.email;
 
@@ -51,9 +63,10 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
         setBusy("name");
         setNote(null);
         try {
-            await advertiserWorkspace.updateProfile({ name: name.trim() });
+            await advertiserWorkspace.updateProfile(names);
             setNote({ tone: "ok", text: "Name saved." });
             onChanged();
+            void refresh();
         } catch (caught) {
             setNote({ tone: "bad", text: messageOf(caught, "Could not save the name.") });
         } finally {
@@ -96,9 +109,12 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
     return (
         <HeaderCard title="Profile">
             <div className="grid gap-x-4 gap-y-5 md:grid-cols-2">
-                <Field label="Full name">
+                <Field label="First name" htmlFor="account-first-name">
+                    <input id="account-first-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={inputClass} maxLength={60} autoComplete="given-name" />
+                </Field>
+                <Field label="Last name" htmlFor="account-last-name">
                     <div className="flex gap-2">
-                        <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} maxLength={120} />
+                        <input id="account-last-name" value={lastName} onChange={(e) => setLastName(e.target.value)} className={inputClass} maxLength={60} autoComplete="family-name" />
                         {nameChanged && (
                             <button type="button" onClick={() => void saveName()} className={btnSmall} disabled={busy !== null}>
                                 {busy === "name" ? "Saving…" : "Save"}
@@ -130,6 +146,13 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
                 <Field label="Role">
                     <p className="pt-2.5 text-sm text-dim">Account owner{advertiser?.name ? ` · ${advertiser.name}` : ""}</p>
                 </Field>
+                {/* 28 Sep 2026: the person's one id; the advertiser account's is named as the account's. */}
+                <Field label={ADX_ID_LABEL}>
+                    <p className="pt-2.5 text-sm font-semibold text-ink">{profile.displayId ?? "—"}</p>
+                </Field>
+                <Field label={ACCOUNT_ID_LABEL.ADVERTISER}>
+                    <p className="pt-2.5 text-sm text-dim">{advertiser?.displayId ?? "—"}</p>
+                </Field>
             </div>
             <p id="phone-note" className="mt-4 text-xs text-dim">
                 Your phone is the number you sign in with. {note && <span className={note.tone === "ok" ? "text-success" : "text-danger"}>{note.text}</span>}
@@ -142,10 +165,15 @@ export function ProfileCard({ profile, advertiser, onChanged }: { profile: UserP
 /* Billing details                                                     */
 /* ------------------------------------------------------------------ */
 
-/** The company and billing details ADX prints on every invoice — `PATCH /advertisers/:id`. */
+/**
+ * The company and billing details ADX prints on every invoice — `PATCH
+ * /advertisers/:id`. Onboarding addresses (the owner, 1 Oct 2026): the
+ * "Find the address" bar over plain boxes — the address, City | State,
+ * PIN | Country. A billing address takes no coordinates.
+ */
 export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser: AdvertiserProfile; kyc: AdvertiserKyc | null; onChanged: () => void }) {
     const [form, setForm] = React.useState({
-        companyName: advertiser.companyName ?? "",
+        companyName: companyNameOf(advertiser),
         gstin: advertiser.gstin ?? "",
         billingAddress: advertiser.billingAddress ?? "",
         city: advertiser.city ?? "",
@@ -161,7 +189,7 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
 
     const changed = (Object.keys(form) as (keyof typeof form)[]).some((key) => form[key].trim() !== ((advertiser[key] as string | null) ?? ""));
 
-    const pinInvalid = !!form.postalCode.trim() && !/^\d{6}$/.test(form.postalCode.trim());
+    const pinInvalid = !!form.postalCode.trim() && !PIN_PATTERN.test(form.postalCode.trim());
 
     const save = async () => {
         if (pinInvalid) {
@@ -193,7 +221,17 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
     const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
     return (
-        <HeaderCard id="billing" title="Billing details" line="Printed on every invoice ADX issues to you" actions={<StatusChip label={`Verification · ${verification.label}`} tone={verification.tone} />}>
+        <HeaderCard
+            id="billing"
+            title="Billing details"
+            line="Printed on every invoice ADX issues to you"
+            actions={
+                <Link href="/advertiser/verify" className="inline-flex items-center gap-1 rounded-md hover:opacity-80" aria-label={`Verification: ${verification.label}. Open Verification`}>
+                    <StatusChip label={`Verification · ${verification.label}`} tone={verification.tone} />
+                    <ChevronRight className="size-4 text-dim" aria-hidden />
+                </Link>
+            }
+        >
             <div className="grid gap-x-4 gap-y-5 md:grid-cols-2">
                 {!individual && (
                     <Field label="Company name">
@@ -203,25 +241,48 @@ export function BillingDetailsCard({ advertiser, kyc, onChanged }: { advertiser:
                 <Field label="GSTIN">
                     <input value={form.gstin} onChange={set("gstin")} className={`${inputClass} uppercase`} placeholder="29ABCDE1234F1Z5" maxLength={15} />
                 </Field>
-                <Field label="Billing address" className="md:col-span-2">
-                    <input value={form.billingAddress} onChange={set("billingAddress")} className={inputClass} maxLength={400} />
+                {/* The bar fills the boxes under it — the line, city, state, PIN and country the place names; never a pin. */}
+                <AddressFinder
+                    id="billing"
+                    className="md:col-span-2"
+                    onPlace={(place) =>
+                        fillFromPlace(place, {
+                            address: (billingAddress) => setForm((f) => ({ ...f, billingAddress })),
+                            city: (city) => setForm((f) => ({ ...f, city })),
+                            state: (state) => setForm((f) => ({ ...f, state })),
+                            postalCode: (postalCode) => setForm((f) => ({ ...f, postalCode })),
+                            country: (country) => setForm((f) => ({ ...f, country })),
+                        })
+                    }
+                />
+                <Field label="Billing address" htmlFor="billing-address" className="md:col-span-2">
+                    <input id="billing-address" value={form.billingAddress} onChange={set("billingAddress")} placeholder={ADDRESS_LINE_PLACEHOLDER} autoComplete="street-address" className={inputClass} maxLength={400} />
                 </Field>
-                <Field label="City">
-                    <input value={form.city} onChange={set("city")} className={inputClass} maxLength={80} />
+                <Field label="City" htmlFor="billing-city">
+                    <input id="billing-city" value={form.city} onChange={set("city")} autoComplete="address-level2" className={inputClass} maxLength={80} />
                 </Field>
-                <Field label="State">
-                    <input value={form.state} onChange={set("state")} className={inputClass} maxLength={80} />
+                <Field label="State" htmlFor="billing-state">
+                    <input id="billing-state" value={form.state} onChange={set("state")} autoComplete="address-level1" className={inputClass} maxLength={80} />
                 </Field>
-                <Field label="PIN code (6 digits)">
-                    <input value={form.postalCode} onChange={(e) => setForm((f) => ({ ...f, postalCode: e.target.value.replace(/\D/g, "").slice(0, 6) }))} inputMode="numeric" autoComplete="postal-code" placeholder="560001" className={`${inputClass} ${pinInvalid ? "border-danger" : ""}`} maxLength={6} />
+                <Field label="PIN code" htmlFor="billing-postal-code">
+                    <input id="billing-postal-code" value={form.postalCode} onChange={(e) => setForm((f) => ({ ...f, postalCode: e.target.value.replace(/\D/g, "").slice(0, 6) }))} inputMode="numeric" autoComplete="postal-code" placeholder={PIN_PLACEHOLDER} className={`${inputClass} ${pinInvalid ? "border-danger" : ""}`} maxLength={6} />
                 </Field>
-                <Field label="Country">
-                    <input value={form.country} onChange={set("country")} autoComplete="country-name" placeholder="India" className={inputClass} maxLength={60} />
+                <Field label="Country" htmlFor="billing-country">
+                    <input id="billing-country" value={form.country} onChange={set("country")} autoComplete="country-name" placeholder="India" className={inputClass} maxLength={60} />
                 </Field>
             </div>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-xs text-dim">
-                    {verification.label === "Verified" ? "Your account is verified." : "Verification is completed in the ADX app under My account; a paid campaign goes live once it is done."}
+                    {verification.label === "Verified" ? (
+                        "Your account is verified."
+                    ) : (
+                        <>
+                            A paid campaign goes live once your business is verified.{" "}
+                            <Link href="/advertiser/verify" className="font-medium text-ink underline underline-offset-4 hover:text-brand">
+                                Verify now
+                            </Link>
+                        </>
+                    )}
                     {note && <span className={`ml-1 ${note.tone === "ok" ? "text-success" : "text-danger"}`}>{note.text}</span>}
                 </p>
                 <button type="button" onClick={() => void save()} className={btnSmall} disabled={busy || !changed}>
@@ -367,10 +428,10 @@ export function PasswordCard({ profile, onChanged }: { profile: UserProfile; onC
  * Security (2FA-A): the authenticator app as this account's second factor,
  * as `GET /auth/2fa/status` reports it — set up, recovery codes, remove.
  */
-export function TwoFactorCard({ status, onChanged }: { status: TwoFactorStatus | null; onChanged: () => void }) {
+export function TwoFactorCard({ status, onChanged, sideLabel = "advertiser account" }: { status: TwoFactorStatus | null; onChanged: () => void; sideLabel?: string }) {
     return (
         <HeaderCard id="security" title="Security" line="An authenticator app adds a second step to every sign-in — by email, phone, Google or Facebook">
-            <AuthenticatorSetup status={status} onChanged={onChanged} sideLabel="advertiser account" />
+            <AuthenticatorSetup status={status} onChanged={onChanged} sideLabel={sideLabel} />
         </HeaderCard>
     );
 }
@@ -404,7 +465,16 @@ export function NotificationsCard({ preferences, onChanged }: { preferences: Not
     };
 
     return (
-        <HeaderCard title="Notification preferences">
+        <HeaderCard
+            title="Notification preferences"
+            line="Four quick switches; every kind on every channel is in the table below"
+            actions={
+                <a href="#notifications" className="inline-flex items-center gap-1 text-sm font-medium text-ink hover:text-brand">
+                    Every kind
+                    <ChevronDown className="size-4" aria-hidden />
+                </a>
+            }
+        >
             <ul className="divide-y divide-line">
                 {PREFERENCE_GROUPS.map((group) => {
                     const available = group.types.length > 0 && preferences.some((p) => group.types.includes(p.type) && !p.mandatory);
@@ -430,11 +500,17 @@ export function NotificationsCard({ preferences, onChanged }: { preferences: Not
 
 /* ------------------------------------------------------------------ */
 
-function Field({ label, trailing, className, children }: { label: string; trailing?: React.ReactNode; className?: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, trailing, className, children }: { label: string; htmlFor?: string; trailing?: React.ReactNode; className?: string; children: React.ReactNode }) {
     return (
         <div className={className}>
             <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-medium text-ink">{label}</p>
+                {htmlFor ? (
+                    <label htmlFor={htmlFor} className="text-sm font-medium text-ink">
+                        {label}
+                    </label>
+                ) : (
+                    <p className="text-sm font-medium text-ink">{label}</p>
+                )}
                 {trailing}
             </div>
             <div className="mt-2">{children}</div>

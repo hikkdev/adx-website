@@ -3,6 +3,7 @@ import {
     artworkInReview,
     campaignActivity,
     campaignQuery,
+    companyNameOf,
     campaignStatusLabel,
     campaignsSummary,
     chipStatuses,
@@ -269,5 +270,17 @@ describe("SL-1, BK-1, WS-1 and GST-D on the workspace", () => {
         expect(rows[1]!.description).toBe("Promo LAUNCH10 (incl. GST −₹108)");
         expect(rows[1]!.total).toBe(-708);
         expect(rows[0]!.description).toBe("Whitefield billboard");
+    });
+});
+
+describe("the registered company name a billing form opens with (28 Sep 2026)", () => {
+    const row = { companyName: null, name: "Raj Traders", type: "COMMERCIAL", mobile: "+919812345678" };
+    it("is the stored one, else a business's side-form name — typed once already", () => {
+        expect(companyNameOf({ ...row, companyName: "Raj Traders Pvt Ltd" })).toBe("Raj Traders Pvt Ltd");
+        expect(companyNameOf(row)).toBe("Raj Traders");
+    });
+    it("is never an individual's name or the number a row is opened under", () => {
+        expect(companyNameOf({ ...row, type: "INDIVIDUAL", name: "Satyapal Raj" })).toBe("");
+        expect(companyNameOf({ ...row, name: "+919812345678" })).toBe("");
     });
 });

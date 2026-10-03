@@ -6,7 +6,13 @@ import { Chip, ChoiceRow, ChoiceTile, LabeledInput, ToggleRow } from "@/componen
 import { InlineError, StepActions, TaskCard } from "@/components/planner/planner-shell";
 import type { StepProps } from "@/components/planner/planner-step";
 import { QrCode, qrSvgDocument } from "@/components/planner/qr-code";
+import { LandingPageBody, useLandingPage } from "@/components/advertiser/landing-page-editor";
+import { FeatureOff } from "@/components/platform/feature-off";
+import { useAdvertiser } from "@/app/advertiser/layout";
+import { apiConfig } from "@/lib/api-config";
 import { messageOf } from "@/lib/api-client";
+import { FLAG_LANDING_PAGES, useSwitchedOff } from "@/lib/flags";
+import { landingPageUrl } from "@/services/campaigns";
 import {
     BASELINES,
     ensureUrl,
@@ -30,6 +36,11 @@ import {
  * setup, the draft QR previews per booked placement, and the brand's
  * launch-approval switch. "Save and prepare artwork" records the plan and
  * hands the campaign to the booking flow.
+ *
+ * Lot E (Q7/Q106): a QR campaign chooses where a scan lands — the
+ * advertiser's own website, or an ADX page drafted from the brief, edited
+ * and published right here (the codes then carry no destination and the
+ * resolver lands them on the published page).
  */
 export function TrackingStep({ campaign, save }: StepProps) {
     const router = useRouter();
@@ -44,6 +55,15 @@ export function TrackingStep({ campaign, save }: StepProps) {
     const [measurementWindowDays, setMeasurementWindowDays] = React.useState<7 | 14 | 30>(config.measurementWindowDays === 7 || config.measurementWindowDays === 30 ? config.measurementWindowDays : 14);
     const [baselinePeriod, setBaselinePeriod] = React.useState<string>(typeof config.baselinePeriod === "string" ? config.baselinePeriod : "SAME_MONTH_LAST_YEAR");
     const [prefs, setPrefs] = React.useState<PlanPrefs>(() => planPrefs.read(campaign.id));
+    const advertiser = useAdvertiser();
+    /* Where a scan lands: the page already drafted is the answer already given; a destination is the other. */
+    const [landing, setLanding] = React.useState<"OWN_URL" | "ADX_PAGE">(typeof config.destinationUrl === "string" && config.destinationUrl ? "OWN_URL" : campaign.landingPage ? "ADX_PAGE" : "OWN_URL");
+    const [autoDraft, setAutoDraft] = React.useState(false);
+    // The page builder is `campaigns.landing-pages`: switched off, it is neither read nor offered, and scans go to the advertiser's own URL.
+    const landingPagesOff = useSwitchedOff(FLAG_LANDING_PAGES);
+    const lp = useLandingPage(campaign.id, method === "QR_OR_DEEPLINK" && !landingPagesOff);
+    const useAdxPage = method === "QR_OR_DEEPLINK" && landing === "ADX_PAGE" && !landingPagesOff;
+    const adxPageUrl = lp.page?.status === "PUBLISHED" ? landingPageUrl(apiConfig.baseUrl, lp.page) : null;
     const [prepared, setPrepared] = React.useState<string | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
@@ -60,17 +80,19 @@ export function TrackingStep({ campaign, save }: StepProps) {
         const code = issued.find((row) => row.spotId === spot.id);
         const content = utmContent(spot.listing.title);
         const draft = destination && isUrl(destination) ? withUtm(destination, utmCampaign.trim() || null, content) : null;
-        return { spot, content, value: code?.url ?? draft, issued: Boolean(code) };
+        return { spot, content, value: code?.url ?? (useAdxPage ? adxPageUrl : draft), issued: Boolean(code) };
     });
 
     const ready =
-        (method === "QR_OR_DEEPLINK" && destinationOk) ||
+        (method === "QR_OR_DEEPLINK" && (useAdxPage ? !!lp.page : destinationOk)) ||
         (method === "VANITY_OR_PROMO" && vanityOk && (vanity !== "" || promoCode.trim() !== "")) ||
         (method === "LOCATION_LIFT" && businessAddress.trim().length >= 2) ||
         method === "NONE";
 
     const patchFor = (): CampaignPatch["tracking"] => {
         if (method === "QR_OR_DEEPLINK") {
+            /* An ADX page is a config with no destination: the resolver falls back to the campaign's PUBLISHED page at scan time. */
+            if (useAdxPage) return { trackingMethod: "QR_OR_DEEPLINK", trackingConfig: {} };
             return { trackingMethod: "QR_OR_DEEPLINK", trackingConfig: { ...(destination ? { destinationUrl: destination } : {}), ...(utmCampaign.trim() ? { utmCampaign: utmCampaign.trim() } : {}) } };
         }
         if (method === "VANITY_OR_PROMO") {
@@ -140,10 +162,41 @@ export function TrackingStep({ campaign, save }: StepProps) {
                 {method === "QR_OR_DEEPLINK" && (
                     <div className="mt-6">
                         <h3 className="text-lg font-semibold leading-6 text-ink">QR code setup</h3>
-                        <div className="mt-5 grid gap-4 md:grid-cols-2">
-                            <LabeledInput label="Destination URL" value={destinationUrl} onChange={setDestinationUrl} placeholder="https://yourbrand.example/offer" hint={!destinationOk ? "That does not read as a web address." : undefined} />
-                            <LabeledInput label="UTM campaign tag" value={utmCampaign} onChange={setUtmCampaign} placeholder="festive-oct26" />
+                        <p className="mt-4 text-sm font-medium text-ink">Where a scan lands</p>
+                        <div role="radiogroup" aria-label="Where a scan lands" className="mt-2 grid gap-3 md:grid-cols-2">
+                            <ChoiceRow title="My own website" description="Scans forward to a URL you give, with the UTM tags attached." selected={landing === "OWN_URL"} onSelect={() => setLanding("OWN_URL")} radio />
+                            {!landingPagesOff && (
+                                <ChoiceRow
+                                    title="Use an ADX page"
+                                    description="ADX drafts a landing page from your brief. Edit it here, then publish it."
+                                    selected={landing === "ADX_PAGE"}
+                                    onSelect={() => {
+                                        setLanding("ADX_PAGE");
+                                        setAutoDraft(true);
+                                    }}
+                                    radio
+                                />
+                            )}
                         </div>
+                        {landingPagesOff && (
+                            <FeatureOff flag={FLAG_LANDING_PAGES} className="mt-3">
+                                Give your own website for the codes, or leave it empty — a scan then lands on ADX&apos;s plain thanks page, and it still counts.
+                            </FeatureOff>
+                        )}
+                        {useAdxPage ? (
+                            <div className="mt-5">
+                                <LandingPageBody lp={lp} campaignId={campaign.id} advertiserPhone={advertiser?.mobile ?? null} autoDraft={autoDraft} />
+                                {lp.page && lp.page.status !== "PUBLISHED" && <p className="mt-4 rounded-md bg-warning-soft px-4 py-3 text-sm text-ink">Publish the page before the campaign goes live. Until it is published a scan lands on ADX&apos;s plain thanks page — it still counts, but shows nothing of yours.</p>}
+                            </div>
+                        ) : (
+                            <>
+                                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                                    <LabeledInput label="Destination URL" value={destinationUrl} onChange={setDestinationUrl} placeholder="https://yourbrand.example/offer" />
+                                    <LabeledInput label="UTM campaign tag" value={utmCampaign} onChange={setUtmCampaign} placeholder="festive-oct26" />
+                                </div>
+                                {!destinationOk && <p className="mt-2 text-sm text-[#8d0b0c]">That destination does not read as a web address.</p>}
+                            </>
+                        )}
                         <p className="mt-5 text-sm text-dim">One unique QR code per booked slot. Use the matching code in each artwork file.</p>
                         {spots.length === 0 ? (
                             <p className="mt-4 text-sm text-dim">Choose ad spaces first — each booked slot gets a code of its own.</p>
@@ -155,7 +208,7 @@ export function TrackingStep({ campaign, save }: StepProps) {
                                             {preview.value ? (
                                                 <QrCode value={preview.value} size={136} title={`QR code for ${preview.spot.listing.title}`} />
                                             ) : (
-                                                <p className="px-3 text-center text-xs text-dim">Add a destination to draw the code</p>
+                                                <p className="px-3 text-center text-xs text-dim">{useAdxPage ? "Publish the page to draw the code" : "Add a destination to draw the code"}</p>
                                             )}
                                         </div>
                                         <div className="min-w-0">

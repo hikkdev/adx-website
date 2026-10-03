@@ -9,21 +9,45 @@ import { Panel } from "@/components/workspace/page-heading";
 import { brandButton, Chip, ErrorNote, Loading, textareaClass } from "@/components/publisher/parts";
 import { useLoad } from "@/components/publisher/use-load";
 import { messageOf } from "@/lib/api-client";
+import { FLAG_LIVE_CHAT, useSwitchedOff } from "@/lib/flags";
 import { cn } from "@/lib/utils";
 import { dateTime, publisherWorkspace, ticketStatus } from "@/services/publisher-workspace";
+import { FeatureOff } from "@/components/platform/feature-off";
+import { LiveChat } from "@/components/support/live-chat";
+import { PrivateFileLink } from "@/components/support/private-file";
+import { isLiveChat, type TicketThread } from "@/services/support";
 
 /**
  * One support request: the thread between the publisher and ADX Support
- * (`GET /support/tickets/:id`), and a reply box while it is open.
+ * (`GET /support/tickets/:id`), and a reply box while it is open. A live
+ * chat is handed to the chat — unless live chat is switched off, when it is
+ * read as a request like any other (the reply route is not behind the switch).
  */
 export default function TicketPage() {
     const { id } = useParams<{ id: string }>();
     const { data, error, loading, reload } = useLoad(`ticket:${id}`, () => publisherWorkspace.ticket(id));
     const [reply, setReply] = React.useState("");
     const [busy, setBusy] = React.useState(false);
+    const chatOff = useSwitchedOff(FLAG_LIVE_CHAT);
 
     if (!data && loading) return <Loading label="Loading the request…" />;
     if (!data) return <ErrorNote message={error ?? "Could not read this request."} onRetry={reload} />;
+
+    /* A ticket that turns out to be a live chat hands over to the chat, as the app does — while live chat is on. */
+    const liveChat = isLiveChat(data as { channel?: "TICKET" | "LIVE_CHAT" });
+    if (liveChat && !chatOff) {
+        return (
+            <>
+                <Link href="/publisher/help" className="inline-flex items-center gap-1 text-sm text-dim hover:text-ink">
+                    <ChevronLeft className="size-4" aria-hidden />
+                    Help &amp; support
+                </Link>
+                <div className="mt-4 max-w-[860px]">
+                    <LiveChat party="PUBLISHER" initialTicket={data as unknown as TicketThread} />
+                </div>
+            </>
+        );
+    }
 
     const status = ticketStatus(data.status);
     const messages = (data.messages ?? []).filter((m) => !m.internal);
@@ -57,14 +81,17 @@ export default function TicketPage() {
             <p className="mt-1 text-sm text-dim">
                 {data.displayId ?? `#${data.id.slice(-4).toUpperCase()}`} · {data.category.toLowerCase().replace(/_/g, " ")} · opened {dateTime(data.createdAt)}
             </p>
+            {liveChat && chatOff && <FeatureOff flag={FLAG_LIVE_CHAT} className="mt-6" />}
 
             <Panel className="mt-6">
                 <div className="grid gap-4">
                     <Message mine author="You" when={data.createdAt} text={data.description} />
                     {data.attachmentUrls.length > 0 && (
-                        <p className="text-xs text-dim">
-                            {data.attachmentUrls.length} attachment{data.attachmentUrls.length === 1 ? "" : "s"} sent with the request.
-                        </p>
+                        <div className="flex flex-col items-end gap-1">
+                            {data.attachmentUrls.map((url, index) => (
+                                <PrivateFileLink key={url} url={url} name={`Attachment ${index + 1}`} className="text-xs text-dim" onError={(message) => toast.error(message)} />
+                            ))}
+                        </div>
                     )}
                     {messages.map((message) => (
                         <Message key={message.id} mine={message.authorId === data.userId} author={message.authorId === data.userId ? "You" : message.authorName || "ADX Support"} when={message.createdAt} text={message.kind === "ATTACHMENT" && !message.message ? `Attachment: ${message.attachmentName ?? "file"}` : message.message} system={message.kind === "SYSTEM"} />

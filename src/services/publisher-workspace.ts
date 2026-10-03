@@ -27,6 +27,8 @@ export interface PublisherProfile {
     address?: string | null;
     city?: string | null;
     state?: string | null;
+    /** The six-digit PIN (1 Oct 2026); null until given. */
+    postalCode?: string | null;
     gstin?: string | null;
     contactName?: string | null;
     contactMobile?: string | null;
@@ -36,8 +38,56 @@ export interface PublisherProfile {
     verified?: boolean;
     avatarUrl?: string | null;
     createdAt?: string;
-    /** QR-3: how far along the account is; absent on an older backend. */
-    readiness?: { score?: number; items?: { key: string; label: string; done: boolean }[] } | null;
+    /** QR-5: the pin behind the address, when it came off the map or a search; null when typed. */
+    latitude?: number | null;
+    longitude?: number | null;
+    /** QR-5: the person's, as YYYY-MM-DD, and their gender — written through to the User row. */
+    dateOfBirth?: string | null;
+    gender?: string | null;
+    /** U8: the account went live (KYC and terms); null until then. */
+    activatedAt?: string | null;
+    /** QR-22: when the platform terms were accepted; null until then. */
+    platformAgreementAcceptedAt?: string | null;
+    /** DS-3: the licence to display, e-signed through Digio — asked for at the first approved listing. */
+    licence?: SigningSlice | null;
+    /** Lot A: the sections ADX has suspended; empty is no suspension. */
+    suspensionScopes?: string[] | null;
+    suspensionReason?: string | null;
+    suspendedAt?: string | null;
+    /** QR-3: how far along the account is (`shared/kyc-state/readiness.ts`); absent on an older backend. */
+    readiness?: PublisherReadiness | null;
+}
+
+/** QR-5: the basics a listing needs, as the server names them — 29 Sep 2026: no date of birth among them (an order asks it). */
+export type ProfileBasic = "name" | "email" | "address";
+
+/**
+ * QR-3 (`publisherReadiness` on the server): the basics are seventy of the
+ * figure, the identity check thirty; `canList` is the listing door's rule
+ * (409 PROFILE_INCOMPLETE until it is true).
+ */
+export interface PublisherReadiness {
+    profile: { complete: boolean; missing: ProfileBasic[]; percent: number };
+    kyc: { verified: boolean; status: string };
+    /** Kept on the read for older clients; weighs nothing since QR-6. */
+    terms?: { accepted: boolean };
+    percent: number;
+    canList: boolean;
+    canGoLive: boolean;
+}
+
+/** DS-1: what a party's own read says about one document to e-sign. */
+export interface SigningSlice {
+    required: boolean;
+    satisfied: boolean;
+    status: "REQUESTED" | "PARTIALLY_SIGNED" | "COMPLETED" | "EXPIRED" | "CANCELLED" | "FAILED" | string | null;
+    requestId: string | null;
+    signingUrl?: string | null;
+    mock?: boolean;
+    expiresAt?: string | null;
+    completedAt?: string | null;
+    signedFileId?: string | null;
+    label?: string | null;
 }
 
 export interface PublisherPatch {
@@ -45,8 +95,13 @@ export interface PublisherPatch {
     email?: string;
     type?: string;
     address?: string;
+    /** QR-5: both or neither; null clears the pin. Onboarding sends them silently, from a pick in the address bar. */
+    latitude?: number | null;
+    longitude?: number | null;
     city?: string;
     state?: string;
+    /** The six-digit PIN (1 Oct 2026). */
+    postalCode?: string;
     gstin?: string;
     contactName?: string;
     contactMobile?: string;
@@ -91,12 +146,43 @@ export const KYC_DOCUMENTS: { key: keyof KycSubmission; label: string; hint: str
     { key: "adAuthLetterUrl", label: "Authorisation to advertise", hint: "The letter or agreement that lets you sell advertising on your spaces" },
 ];
 
+/**
+ * The booking holding a spot today, as the dashboard joins it for the map's
+ * Location Card (DR 02·03 3949:4333): who, for how much, when, where it
+ * stands, and the agent on it. `amount` is money — a decimal string.
+ */
+export interface DashboardBooking {
+    orderId: string;
+    advertiserName: string | null;
+    campaignName: string | null;
+    amount: Money | null;
+    startDate: string | null;
+    endDate: string | null;
+    status: OrderStatus | string;
+    agent: { id: string; name: string | null; phone: string | null } | null;
+}
+
+/** One spot on the Overview's map, with the one fact the gauge is computed from. */
+export interface DashboardListing {
+    id: string;
+    title: string;
+    status: string;
+    latitude: number | null;
+    longitude: number | null;
+    occupied: boolean;
+    /** Null when the spot is free — the card then shows the title and View listing only. */
+    booking?: DashboardBooking | null;
+}
+
+/** `GET /publishers/me/dashboard` — DR 01's publisher home: the gauge, the map, what is waiting. */
 export interface PublisherDashboard {
     name: string;
     greeting: string;
+    /** 0–100, or null while nothing is live. */
     occupancy: { rate: number | null; occupied: number; live: number };
+    /** Bookings waiting for the publisher's answer. */
     awaiting: number;
-    listings: { id: string; title: string; status: string; occupied: boolean }[];
+    listings: DashboardListing[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -130,11 +216,29 @@ export interface MyListing {
     photos?: ListingPhoto[];
     occupied: boolean;
     belowFloor?: boolean;
+    /** Lot D (Q6): the publisher accepts bookings on this spot the moment they are placed. */
+    instantBooking?: boolean;
+    /** QR-24: how the space is held, until when, and when the term ran out. */
+    rightsBasis?: "OWNED" | "LEASED" | "LICENSED" | "PERMIT" | null;
+    rightsValidUntil?: string | null;
+    rightsLapsedAt?: string | null;
+    /** QR-26: the re-verification clock — 180 days for a permanent structure, 90 for a removable one. */
+    removability?: "PERMANENT" | "REMOVABLE" | null;
+    verifiedAt?: string | null;
+    verificationExpiresAt?: string | null;
     rejectionReason?: string | null;
     submittedAt?: string | null;
     publishedAt?: string | null;
     createdAt: string;
 }
+
+/**
+ * DR 06's shelves (4428:1741): AVAILABLE is live with nothing running,
+ * OCCUPIED live with something running, INACTIVE not live at all. The server
+ * counts each over the search, never over the shelf in force.
+ */
+export type InventoryShelf = "AVAILABLE" | "OCCUPIED" | "INACTIVE";
+export type InventorySort = "NEWEST" | "OLDEST" | "RATE_ASC" | "RATE_DESC" | "TITLE";
 
 export interface MyListingsPage {
     items: MyListing[];
@@ -287,7 +391,7 @@ export interface SpotInsights {
 
 export type PayoutMethodStatus = "PENDING_VERIFICATION" | "VERIFIED" | "REJECTED";
 export type WithdrawalStatus = "REQUESTED" | "APPROVED" | "PROCESSING" | "PAID" | "REJECTED" | "FAILED" | "CANCELLED";
-export type WalletEntryType = "TOPUP" | "CAMPAIGN_DEBIT" | "PACKAGE_DEBIT" | "GOODWILL_CREDIT" | "REFUND" | "ADJUSTMENT" | "EARNING" | "BONUS" | "REFERRAL" | "PAYOUT" | "PENALTY" | "EXPIRY";
+export type WalletEntryType = "TOPUP" | "CAMPAIGN_DEBIT" | "PACKAGE_DEBIT" | "GOODWILL_CREDIT" | "REFUND" | "ADJUSTMENT" | "EARNING" | "BONUS" | "REFERRAL" | "PAYOUT" | "PENALTY" | "EXPIRY" | "PROMOTION_DEBIT";
 
 export interface PayoutMethod {
     id: string;
@@ -532,6 +636,8 @@ export interface NotificationPreference {
 
 export interface AccountMe {
     id: string;
+    /** QR-4: the person's own ADX-… id — "Your ADX ID". */
+    displayId?: string | null;
     mobile: string;
     email: string | null;
     name: string | null;
@@ -570,8 +676,8 @@ export const publisherWorkspace = {
     submitKyc: (documents: KycSubmission) => api.post<PublisherKyc>("/publishers/me/kyc", documents),
 
     /* Inventory */
-    listings: (query: { q?: string; shelf?: string; sort?: string; page?: number; pageSize?: number } = {}) =>
-        api.get<MyListingsPage>(`/publishers/me/listings${listQuery({ ...query, pageSize: query.pageSize ?? 100 })}`),
+    listings: (query: { q?: string; shelf?: InventoryShelf; sort?: InventorySort; page?: number; pageSize?: number } = {}) =>
+        api.get<MyListingsPage>(`/publishers/me/listings${listQuery({ ...query, q: query.q?.trim() || undefined, pageSize: query.pageSize ?? 100 })}`),
 
     /* Bookings */
     bookings: (query: { status?: string; q?: string; sort?: string; page?: number; pageSize?: number } = {}) =>

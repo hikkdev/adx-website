@@ -11,7 +11,6 @@ import {
     formatFlight,
     fulfilmentOfLine,
     isDigital,
-    joinBillingAddress,
     normalisePromo,
     orientationOf,
     rupees,
@@ -154,8 +153,7 @@ describe("the artwork", () => {
 });
 
 describe("the billing address", () => {
-    it("keeps the pincode at the end of the one line the backend holds", () => {
-        expect(joinBillingAddress("24, Whitefield Main Road", "560066")).toBe("24, Whitefield Main Road, 560066");
+    it("reads the pincode off the end of an address line saved before AD-1", () => {
         expect(splitBillingAddress("24, Whitefield Main Road, 560066")).toEqual({ street: "24, Whitefield Main Road", postalCode: "560066" });
         expect(splitBillingAddress("14, Residency Road, Bengaluru")).toEqual({ street: "14, Residency Road, Bengaluru", postalCode: "" });
     });

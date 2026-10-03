@@ -35,7 +35,7 @@ export function PlannerShell({
     title,
     subtitle,
     bar,
-    backHref = "/advertiser",
+    backHref = "/advertiser/campaigns",
     backLabel = "Campaigns",
     children,
 }: {

@@ -27,7 +27,7 @@ export function MapPanel({ cards, className }: { cards: BrowseCard[]; className?
         : [12.9716, 77.5946];
 
     return (
-        <div className={cn("overflow-hidden rounded-2xl border border-line bg-white shadow-card", className)}>
+        <div className={cn("relative isolate overflow-hidden rounded-2xl border border-line bg-white shadow-card", className)}>
             <MapContainer center={center} zoom={pinned.length ? 12 : 11} scrollWheelZoom={false} style={{ height: 380, width: "100%" }}>
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
                 {pinned.map((card) => (

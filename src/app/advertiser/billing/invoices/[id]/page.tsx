@@ -105,8 +105,8 @@ function InvoiceView({ invoice, documentLines, campaign, review, payments, adver
 
     return (
         <>
-            <Link href="/advertiser/billing" className="text-sm text-ink hover:text-brand">
-                Back to billing
+            <Link href="/advertiser/billing?view=INVOICES" className="text-sm text-ink hover:text-brand">
+                Back to invoices
             </Link>
             <div className="mt-3 border-t border-line pt-5">
                 <PageHeading
@@ -117,6 +117,11 @@ function InvoiceView({ invoice, documentLines, campaign, review, payments, adver
                             {campaign && (
                                 <Link href={`/advertiser/campaigns/${campaign.id}`} className={btnOutline}>
                                     View campaign
+                                </Link>
+                            )}
+                            {!campaign && invoice.packageSaleId && (
+                                <Link href={`/advertiser/plans/${encodeURIComponent(invoice.packageSaleId)}`} className={btnOutline}>
+                                    View plan
                                 </Link>
                             )}
                             <button type="button" onClick={() => void download()} className={btnOutline} disabled={downloading === "busy"}>

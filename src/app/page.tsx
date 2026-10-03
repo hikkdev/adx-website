@@ -1,40 +1,45 @@
-/* eslint-disable @next/next/no-html-link-for-pages -- the static site's markup, kept as it was */
 import type { Metadata } from "next";
+import Link from "next/link";
+import { SiteFooter } from "@/components/site/site-footer";
+import { SiteHeader } from "@/components/site/site-header";
+import { HomeBlocks } from "@/components/layout/home-blocks";
+import { readLayoutServer } from "@/services/layouts";
 import "./home.css";
 
-export const metadata: Metadata = {
-    title: "ADX — Space that gets seen",
-    description:
-        "ADX is an Indian marketplace for advertising space. Publishers list hoardings, billboards, screens and in-store spots; advertisers book campaigns on them; ADX verifies every spot in the field.",
-};
+/**
+ * No title or description of its own: the home page wears the site's, which
+ * the root layout reads from the Website surface of Settings › Brand & theme.
+ */
+export const metadata: Metadata = {};
+
+/** LM-1: kept a minute at a time, with the layout a visitor sees. */
+export const revalidate = 60;
 
 /**
- * The home page, kept exactly as the static site drew it (owner, 24 Sep
+ * The home page's body, kept as the static site drew it (owner, 24 Sep
  * 2026: "the homepage is not ready yet, so keep the current homepage
- * design"). Its markup and stylesheet are the old index.html and styles.css,
- * the stylesheet scoped under `.legacy-home` so nothing of it leaks into the
- * DR 12 pages. When the DR 12 home lands, this file is replaced whole.
+ * design"), inside the site's one header and footer (owner, 26 Sep 2026:
+ * the DR 12 chrome goes forward, the static site's is discarded). The
+ * stylesheet is scoped under `.legacy-home` so nothing of it leaks into the
+ * DR 12 pages. When the DR 12 home lands, the body is replaced whole.
+ *
+ * LM-1: that body is the `legacy_home` block of the `WEB_HOME` layout; the
+ * blocks ADX publishes around it draw above or below it, outside its
+ * stylesheet. No layout, or one that cannot be read, is the body alone.
  */
-export default function HomePage() {
+export default async function HomePage() {
+    const layout = await readLayoutServer("WEB_HOME");
     return (
-        <div className="legacy-home">
-              <header className="site">
-                <div className="wrap">
-                  <a href="/"><img src="/brand/adx-wordmark-red.svg" alt="ADX" /></a>
-                  <nav>
-                    <a href="#how">How it works</a>
-                    <a href="#pricing">Pricing</a>
-                    <a href="#apps">Apps</a>
-                    <a href="/contact.html">Contact</a>
-                  </nav>
-                </div>
-              </header>
+        <div className="flex min-h-screen flex-col bg-ground">
+            <SiteHeader />
+            <main className="flex-1">
+              <HomeBlocks initial={layout} legacy={<div className="legacy-home">
 
               <section className="hero">
                 <div className="wrap">
                   <h1>Advertising space, <span>booked like a room.</span></h1>
                   <p className="lead">ADX is a marketplace for out-of-home and in-store advertising in India. Publishers list their hoardings, billboards, digital screens and retail spots. Advertisers find them by place and audience and book campaigns by the day. ADX field agents verify every spot before it goes live and again on a fixed cadence.</p>
-                  <a className="cta" href="/contact.html">Talk to us</a>
+                  <Link className="cta" href="/contact">Talk to us</Link>
                   <a className="cta secondary" href="#how">See how it works</a>
                 </div>
               </section>
@@ -86,7 +91,7 @@ export default function HomePage() {
                       <tr><td>Withdrawals</td><td>Publisher or agent</td><td>Transfers to a verified Indian bank account or UPI ID. Daily and per-transfer limits apply by account tier.</td></tr>
                     </tbody>
                   </table>
-                  <p className="sub" style={{marginTop: "18px"}}>Exact rates and the current commission schedule are shown inside the app at the point of booking and in the publisher's earnings statement. See the <a href="/refund.html">refund and cancellation policy</a> for what happens when a campaign changes.</p>
+                  <p className="sub" style={{marginTop: "18px"}}>Exact rates and the current commission schedule are shown inside the app at the point of booking and in the publisher's earnings statement. See the <Link href="/refund">refund and cancellation policy</Link> for what happens when a campaign changes.</p>
                 </div>
               </section>
 
@@ -102,20 +107,9 @@ export default function HomePage() {
                 </div>
               </section>
 
-              <footer className="site">
-                <div className="wrap">
-                  <div>
-                    <img src="/brand/adx-wordmark-red.svg" alt="ADX" /><br />
-                    ADX is operated by Keysquare Technologies Pvt Ltd, 65-A, Kundan Nagar, New Delhi 110092 · <a href="tel:+918000800546">+91 80008 00546</a>
-                  </div>
-                  <nav>
-                    <a href="/privacy.html">Privacy policy</a>
-                    <a href="/terms.html">Terms of service</a>
-                    <a href="/refund.html">Refunds &amp; cancellations</a>
-                    <a href="/contact.html">Contact</a>
-                  </nav>
-                </div>
-              </footer>
+              </div>} />
+            </main>
+            <SiteFooter />
         </div>
     );
 }

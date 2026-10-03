@@ -148,6 +148,8 @@ export interface Campaign {
     designQuoteNote?: string | null;
     designQuotedAt?: string | null;
     designQuoteRespondedAt?: string | null;
+    /** E11-2: the ADX page, narrowly — null when there is none; absent on a PATCH's answer. */
+    landingPage?: { id: string; slug: string; status: "DRAFT" | "PUBLISHED" | string; url: string; publishedAt: string | null } | null;
 }
 
 export type DesignQuoteStatus = "QUOTED" | "ACCEPTED" | "DECLINED";
@@ -193,6 +195,27 @@ export type CampaignPatch = Partial<{
         | { trackingMethod: "VANITY_OR_PROMO"; trackingConfig?: { vanityUrl?: string; promoCode?: string; redemptionWindow: string } }
         | { trackingMethod: "LOCATION_LIFT"; trackingConfig?: { businessAddress: string; latitude?: number; longitude?: number; measurementWindowDays: number; baselinePeriod: string } };
 }>;
+
+export type InventorySort = "BEST_MATCH" | "LOWEST_RATE" | "MOST_REACH";
+
+/** The shortlist's three orders, as the app offers them. */
+export const INVENTORY_SORTS: { id: InventorySort; title: string }[] = [
+    { id: "BEST_MATCH", title: "Best match" },
+    { id: "LOWEST_RATE", title: "Lowest rate" },
+    { id: "MOST_REACH", title: "Most reach" },
+];
+
+/** "+18" — a reason's share of the score, as the app prints it. */
+export const contributionLabel = (points: number): string => `${points >= 0 ? "+" : "−"}${Math.abs(Math.round(points))}`;
+
+/** A brand as `GET /advertisers/:id/brands/:brandId` answers it — what a campaign started under it is prefilled from. */
+export interface BrandSeed {
+    id: string;
+    name: string;
+    industry: string | null;
+    subCategory: string | null;
+    awareness?: BrandAwarenessLevel | null;
+}
 
 export interface MatchReason {
     label: string;
@@ -642,6 +665,17 @@ export function radiusPatch(input: { location: string; latitude: number; longitu
     };
 }
 
+/**
+ * Several markets (Lot D, Q8 — behind `multi-market-campaigns`): the list,
+ * with `targetMarket` its first entry for every reader that predates it.
+ * The list is always sent — a list of one clears a second market chosen
+ * earlier, and only a list of two or more meets the server's switch.
+ */
+export function marketsPatch(markets: string[]): CampaignPatch {
+    const names = [...new Set(markets.map((name) => name.trim()).filter(Boolean))];
+    return { ...marketPatch(names[0] ?? ""), targetMarkets: names };
+}
+
 export function marketPatch(market: string): CampaignPatch {
     return {
         targetingMethod: "MARKET_OR_DMA",
@@ -773,7 +807,7 @@ export const plannerService = {
     create: (body: { name?: string; brandId?: string | null } = {}) => api.post<Campaign>("/campaigns", body),
     get: (id: string) => api.get<Campaign>(`/campaigns/${encodeURIComponent(id)}`),
     patch: (id: string, patch: CampaignPatch) => api.patch<Campaign>(`/campaigns/${encodeURIComponent(id)}`, patch),
-    inventory: (id: string, query: { sort?: "BEST_MATCH" | "LOWEST_RATE" | "MOST_REACH"; limit?: number } = {}) => {
+    inventory: (id: string, query: { sort?: InventorySort; limit?: number } = {}) => {
         const params = new URLSearchParams();
         if (query.sort) params.set("sort", query.sort);
         if (query.limit) params.set("limit", String(query.limit));
@@ -787,7 +821,13 @@ export const plannerService = {
     trackingCodeSvg: (id: string, code: string, size = 512) =>
         apiBlob(`/campaigns/${encodeURIComponent(id)}/tracking-codes/${encodeURIComponent(code)}/image.svg?size=${size}`),
     industries: () => api.get<string[]>("/advertisers/industries"),
-    contentCategories: () => api.get<ContentCategory[]>("/campaigns/content-categories"),
+    /** Lot D (Q138): the seeded content categories; a malformed answer is none. */
+    contentCategories: async (): Promise<ContentCategory[]> => {
+        const rows = await api.get<unknown>("/campaigns/content-categories");
+        return Array.isArray(rows) ? (rows as ContentCategory[]) : [];
+    },
+    /** DR 06: the brand a campaign is started under, for its name and industry. */
+    brand: (advertiserId: string, brandId: string) => api.get<BrandSeed>(`/advertisers/${encodeURIComponent(advertiserId)}/brands/${encodeURIComponent(brandId)}`),
     cities: (query: PickerQuery = {}) => api.get<PickerPage>(`/app/geo/cities${pickerSearch(query)}`),
     autocomplete: (query: AutocompleteQuery) => api.get<PlacePrediction[]>(`/geo/autocomplete${autocompleteSearch(query)}`),
     place: (placeId: string, session?: string) =>

@@ -5,15 +5,20 @@ import { FileText, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { messageOf } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { PrivateFileLink, PrivateImage } from "@/components/files/private-file";
 import { listingEditorService, type UploadPurpose } from "@/services/listing-editor";
 import type { StoredFile } from "./form-model";
 import { Pill } from "./fields";
+import { takenAtOf } from "./photo-time";
 
 /**
  * Files on the two boards go through one door: `POST /upload` with a
  * purpose, then the URL the backend answers is what the listing, the
  * document or the KYC row stores. Photographs are LISTING_PHOTO (public);
- * papers are VERIFICATION, as the app files them.
+ * papers are VERIFICATION, as the app files them — and since ST-2 (28 Sep
+ * 2026) a VERIFICATION file is private: its URL is `/api/v1/files/:id`, so
+ * every row below opens or draws it through `PrivateFileLink` /
+ * `PrivateImage` (the bearer), never a bare link.
  */
 export function useUploader(purpose: UploadPurpose) {
     const [busy, setBusy] = React.useState(false);
@@ -21,8 +26,10 @@ export function useUploader(purpose: UploadPurpose) {
         async (file: File): Promise<StoredFile | null> => {
             setBusy(true);
             try {
+                /* The listing-data-gaps lot: a photograph keeps its upload row and, when its EXIF says, the moment it was taken — read here, since the server strips a public image's metadata. */
+                const takenAt = purpose === "LISTING_PHOTO" ? await takenAtOf(file) : null;
                 const stored = await listingEditorService.upload(file, purpose);
-                return { url: stored.url, name: file.name };
+                return { url: stored.url, name: file.name, ...(stored.id ? { fileId: stored.id } : {}), ...(takenAt ? { takenAt } : {}) };
             } catch (caught) {
                 toast.error(messageOf(caught, "The upload did not go through."));
                 return null;
@@ -128,9 +135,9 @@ export function FileRow({ file, status, onRemove, className }: { file: StoredFil
             <span className="flex size-8 items-center justify-center rounded-md border border-line bg-white text-ink">
                 <FileText className="size-4" aria-hidden />
             </span>
-            <a href={file.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-sm font-medium text-ink hover:underline">
+            <PrivateFileLink url={file.url} name={file.name} className="min-w-0 flex-1 truncate text-sm font-medium text-ink hover:underline">
                 {file.name}
-            </a>
+            </PrivateFileLink>
             {status && <Pill tone={status.tone}>{status.label}</Pill>}
             {onRemove && (
                 <button type="button" onClick={onRemove} className="inline-flex h-7 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs text-ink hover:border-ink">
@@ -162,7 +169,7 @@ export function PhotoSlot({ label, file, onChange, hint = "JPG or PNG · Clear, 
             <div className="mt-2">
                 {file ? (
                     <div className="relative overflow-hidden rounded-lg border border-line bg-ground">
-                        <img src={file.url} alt={label} className="h-[200px] w-full object-cover" />
+                        <PrivateImage src={file.url} alt={label} className="h-[200px] w-full object-cover" />
                         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-white/90 px-3 py-2">
                             <span className="truncate text-xs text-ink">{file.name}</span>
                             <button type="button" onClick={() => onChange(null)} className="text-xs font-semibold text-brand">
@@ -217,6 +224,9 @@ export function DocumentSlot({ title, description, file, onChange, accept = "app
             {file && (
                 <div className="mt-3 flex items-center gap-3">
                     <GhostButton onClick={() => input.current?.click()}>Replace file</GhostButton>
+                    <PrivateFileLink url={file.url} name={file.name} className="text-sm text-dim hover:text-ink">
+                        View
+                    </PrivateFileLink>
                     <button type="button" onClick={() => onChange(null)} className="text-sm text-dim hover:text-ink">
                         Remove
                     </button>
@@ -291,9 +301,9 @@ export function RequirementRow({
                         <span className="flex items-center gap-2 text-sm text-dim">
                             {file ? (
                                 <>
-                                    <a href={file.url} target="_blank" rel="noreferrer" className="truncate text-ink hover:underline">
+                                    <PrivateFileLink url={file.url} name={file.name} className="truncate text-ink hover:underline">
                                         {file.name}
-                                    </a>
+                                    </PrivateFileLink>
                                     <button type="button" onClick={() => onChange(null)} className="hover:text-ink">
                                         Remove
                                     </button>
@@ -326,6 +336,11 @@ export function EvidenceRow({ title, meta, file, onChange }: { title: string; me
                 <p className="text-[11px] leading-4 text-dim">{file ? file.name : meta}</p>
             </div>
             <div className="flex shrink-0 items-center gap-3">
+                {file && (
+                    <PrivateFileLink url={file.url} name={file.name} className="text-xs text-dim hover:text-ink">
+                        View
+                    </PrivateFileLink>
+                )}
                 {file && (
                     <button type="button" onClick={() => onChange(null)} className="text-xs text-dim hover:text-ink">
                         Remove

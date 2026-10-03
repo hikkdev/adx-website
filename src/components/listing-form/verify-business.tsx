@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { messageOf } from "@/lib/api-client";
 import { listingEditorService, type PublisherKyc, type PublisherProfile } from "@/services/listing-editor";
+import { ADDRESS_LINE_PLACEHOLDER, AddressFinder, fillFromPlace, PIN_PATTERN, PIN_PLACEHOLDER } from "./address-search";
 import { LabelledInput, Note, Problem } from "./fields";
 import type { StoredFile } from "./form-model";
 import { DropZone, FileRow } from "./uploads";
@@ -21,16 +22,24 @@ function maskMobile(mobile: string | null | undefined): string {
 
 type Loaded = { key: string; me: PublisherProfile | null; kyc: PublisherKyc | null; error: string | null };
 
+type Fields = { name: string; email: string; contactName: string; gstin: string; address: string; city: string; state: string; postalCode: string };
+
 /**
  * 29 · Verify your business (5204:82615): the business and contact details
  * (`PATCH /publishers/me`) and one supporting document (`POST /upload`
  * purpose KYC, then `POST /publishers/me/kyc` as the business registration
  * certificate). The phone number is the account and cannot be typed here.
+ *
+ * Onboarding addresses (the owner, 1 Oct 2026): the business address is the
+ * "Find the address" bar over plain boxes — Address, City | State, PIN — no
+ * map; a pick's coordinates go up with the save, never shown.
  */
 export function VerifyBusiness() {
     const router = useRouter();
     const [loaded, setLoaded] = React.useState<Loaded>({ key: "", me: null, kyc: null, error: null });
-    const [fields, setFields] = React.useState<{ name: string; email: string; contactName: string; address: string; gstin: string } | null>(null);
+    const [fields, setFields] = React.useState<Fields | null>(null);
+    /* The coordinates of the place picked in the bar — sent with the save, never shown. */
+    const [point, setPoint] = React.useState<{ latitude: number; longitude: number } | null>(null);
     const [file, setFile] = React.useState<StoredFile | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [problem, setProblem] = React.useState<string | null>(null);
@@ -42,7 +51,7 @@ export function VerifyBusiness() {
                 const [me, kyc] = await Promise.all([listingEditorService.publisher(), listingEditorService.kyc().catch(() => null)]);
                 if (cancelled) return;
                 setLoaded({ key: "me", me, kyc, error: null });
-                setFields({ name: me.name ?? "", email: me.email ?? "", contactName: me.contactName ?? "", address: [me.address, me.city, me.state].filter(Boolean).join(", "), gstin: me.gstin ?? "" });
+                setFields({ name: me.name ?? "", email: me.email ?? "", contactName: me.contactName ?? "", gstin: me.gstin ?? "", address: me.address ?? "", city: me.city ?? "", state: me.state ?? "", postalCode: me.postalCode ?? "" });
             } catch (caught) {
                 if (!cancelled) setLoaded({ key: "me", me: null, kyc: null, error: messageOf(caught, "Could not read your business details.") });
             }
@@ -57,6 +66,10 @@ export function VerifyBusiness() {
 
     const submit = async () => {
         if (!fields || !me) return;
+        if (fields.postalCode.trim() && !PIN_PATTERN.test(fields.postalCode.trim())) {
+            setProblem("A PIN code is six digits, like 560001.");
+            return;
+        }
         if (!file && !loaded.kyc?.businessRegCertUrl) {
             setProblem("Add the supporting business document before submitting.");
             return;
@@ -69,8 +82,15 @@ export function VerifyBusiness() {
             if (fields.email.trim() && fields.email.trim() !== (me.email ?? "")) patch.email = fields.email.trim();
             if (fields.contactName.trim() && fields.contactName.trim() !== (me.contactName ?? "")) patch.contactName = fields.contactName.trim();
             if (fields.gstin.trim() && fields.gstin.trim().toUpperCase() !== (me.gstin ?? "")) patch.gstin = fields.gstin.trim().toUpperCase();
-            const address = fields.address.trim();
-            if (address && address !== [me.address, me.city, me.state].filter(Boolean).join(", ")) patch.address = address;
+            for (const key of ["address", "city", "state", "postalCode"] as const) {
+                const value = fields[key].trim();
+                if (value && value !== (me[key] ?? "")) patch[key] = value;
+            }
+            /* Both or neither, and only after a pick: typed by hand, the coordinates keep what they were. */
+            if (point) {
+                patch.latitude = point.latitude;
+                patch.longitude = point.longitude;
+            }
             if (Object.keys(patch).length) await listingEditorService.updatePublisher(patch);
             if (file) await listingEditorService.submitKyc({ businessRegCertUrl: file.url });
             router.push(`/publisher/listings/new/verify-business/submitted?doc=${encodeURIComponent(file?.name ?? "")}`);
@@ -95,8 +115,22 @@ export function VerifyBusiness() {
                     <LabelledInput label="Email address" type="email" value={fields?.email ?? ""} onChange={(email) => put({ email })} placeholder="hello@metromedia.example" />
                     <LabelledInput label="Contact name" value={fields?.contactName ?? ""} onChange={(contactName) => put({ contactName })} placeholder="Metro Media team" />
                     <LabelledInput label="Phone number" type="tel" value={maskMobile(me?.mobile)} readOnly />
-                    <LabelledInput label="Business address" value={fields?.address ?? ""} onChange={(address) => put({ address })} placeholder="Bengaluru, Karnataka" />
                     <LabelledInput label="GST number (if applicable)" value={fields?.gstin ?? ""} onChange={(gstin) => put({ gstin })} placeholder="Enter GST number" />
+                </div>
+                <h3 className="mt-6 text-sm font-semibold text-ink">Business address</h3>
+                <div className="mt-3 grid gap-x-5 gap-y-4 md:grid-cols-2">
+                    <AddressFinder
+                        id="verify-business-address"
+                        className="md:col-span-2"
+                        disabled={!fields}
+                        onPlace={(place) => fillFromPlace(place, { address: (address) => put({ address }), city: (city) => put({ city }), state: (state) => put({ state }), postalCode: (postalCode) => put({ postalCode }), point: setPoint })}
+                    />
+                    <div className="md:col-span-2">
+                        <LabelledInput label="Address" value={fields?.address ?? ""} onChange={(address) => put({ address })} placeholder={ADDRESS_LINE_PLACEHOLDER} />
+                    </div>
+                    <LabelledInput label="City" value={fields?.city ?? ""} onChange={(city) => put({ city })} placeholder="Bengaluru" />
+                    <LabelledInput label="State" value={fields?.state ?? ""} onChange={(state) => put({ state })} placeholder="Karnataka" />
+                    <LabelledInput label="PIN code" value={fields?.postalCode ?? ""} onChange={(postalCode) => put({ postalCode: postalCode.replace(/\D/g, "").slice(0, 6) })} placeholder={PIN_PLACEHOLDER} />
                 </div>
             </section>
 

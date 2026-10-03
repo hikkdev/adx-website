@@ -6,6 +6,7 @@ import { ChevronDown } from "lucide-react";
 import { Panel } from "@/components/workspace/page-heading";
 import { brandButton, CardTitle, ErrorNote, Loading, StatusText } from "@/components/publisher/parts";
 import { useLoad } from "@/components/publisher/use-load";
+import { HelpExtras } from "@/components/support/help-extras";
 import { cn } from "@/lib/utils";
 import { usePublisher } from "../layout";
 import { publisherWorkspace, relativeTime, ticketStatus } from "@/services/publisher-workspace";
@@ -74,7 +75,9 @@ export default function HelpPage() {
                 )}
             </Panel>
 
-            <Panel className="mt-6">
+            <HelpExtras party="PUBLISHER" />
+
+            <Panel className="mt-4">
                 <CardTitle>Help topics</CardTitle>
                 <div className="mt-2 divide-y divide-line px-3">
                     {TOPICS.map((topic, index) => {

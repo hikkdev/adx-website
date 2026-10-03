@@ -4,10 +4,13 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { CalendarDays } from "lucide-react";
+import { toast } from "sonner";
 import { apiBlob } from "@/lib/api-client";
+import { isPrivateFileUrl, openPrivateFile, privateFileMessage } from "@/lib/private-file";
 import { PageHeading } from "@/components/workspace/page-heading";
 import { useAdvertiser } from "@/app/advertiser/layout";
 import { ActivityList, btnOutline, btnPrimary, DocRow, ErrorPanel, LoadingLine, PrivateImage, StatusChip, useAsync } from "@/components/advertiser/bits";
+import { RateSpaceCard } from "@/components/advertiser/rate-space-card";
 import {
     advertiserWorkspace,
     categoryLabel,
@@ -21,6 +24,7 @@ import {
     proofStatus,
     shortDate,
     type AdvertiserOrder,
+    type CampaignSpot,
     type Invoice,
     type OrderEvidence,
 } from "@/services/advertiser-workspace";
@@ -46,7 +50,10 @@ export default function InstallationProofPage() {
                 advertiserWorkspace.evidence(orderId).catch(() => null as OrderEvidence | null),
                 advertiserId ? advertiserWorkspace.invoices(advertiserId).catch(() => [] as Invoice[]) : Promise.resolve([] as Invoice[]),
             ]);
-            return { order, evidence, invoices };
+            /* Lot D (Q104): a delivered booking can be rated — the campaign read names the spot behind the order and whether it was rated already. */
+            const campaignId = order.campaignSpot?.campaignId ?? null;
+            const spot = campaignId && order.status === "COMPLETED" ? await advertiserWorkspace.campaign(campaignId).then((campaign) => campaign.spots.find((row) => row.orderId === order.id) ?? null).catch(() => null) : null;
+            return { order, evidence, invoices, spot };
         },
         "Could not read this delivery proof."
     );
@@ -61,11 +68,11 @@ export default function InstallationProofPage() {
         );
     }
 
-    const { order, evidence, invoices } = state.value;
-    return <ProofView order={order} evidence={evidence} invoices={invoices} />;
+    const { order, evidence, invoices, spot } = state.value;
+    return <ProofView order={order} evidence={evidence} invoices={invoices} spot={spot} />;
 }
 
-function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evidence: OrderEvidence | null; invoices: Invoice[] }) {
+function ProofView({ order, evidence, invoices, spot }: { order: AdvertiserOrder; evidence: OrderEvidence | null; invoices: Invoice[]; spot: CampaignSpot | null }) {
     const status = proofStatus(order);
     const photos = evidence?.photos ?? [];
     const installation = photos.find((p) => p.kind === "INSTALLATION") ?? photos[0] ?? null;
@@ -93,7 +100,16 @@ function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evid
     for (const url of order.selfInstallConditionPhotoUrls ?? []) documents.push({ id: url, title: "Site condition photo", line: fileNameOf(url), url });
     if (order.selfInstallInstallPhotoUrl && !photos.length) documents.push({ id: "self-install", title: "Installation photo", line: fileNameOf(order.selfInstallInstallPhotoUrl), url: order.selfInstallInstallPhotoUrl });
 
-    const openDocument = async (url: string) => {
+    const openDocument = async (url: string, name: string) => {
+        /* ST-2 (28 Sep 2026): a private file — `/api/v1/files/:id`, on any host — opens with the bearer, never bare. */
+        if (isPrivateFileUrl(url)) {
+            try {
+                await openPrivateFile(url, name);
+            } catch (caught) {
+                toast.error(privateFileMessage(caught));
+            }
+            return;
+        }
         if (/^https?:\/\//i.test(url)) {
             window.open(url, "_blank", "noopener");
             return;
@@ -140,7 +156,7 @@ function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evid
                         <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink">{status.key === "VERIFIED" ? "Verified documents" : "Submitted documents"}</p>
                         <div className="mt-3 space-y-3">
                             {documents.map((doc) => (
-                                <DocRow key={doc.id} title={doc.title} line={doc.line} onClick={() => void openDocument(doc.url)} />
+                                <DocRow key={doc.id} title={doc.title} line={doc.line} onClick={() => void openDocument(doc.url, doc.title)} />
                             ))}
                             {documents.length === 0 && (
                                 <p className="rounded-lg border border-line bg-white px-4 py-5 text-sm text-dim">
@@ -177,6 +193,8 @@ function ProofView({ order, evidence, invoices }: { order: AdvertiserOrder; evid
                             <p className={`${order.selfInstallNotes?.trim() ? "mt-2" : "mt-3"} text-sm leading-relaxed text-dim`}>{order.notes?.trim() || (order.selfInstallNotes?.trim() ? "" : `No note from ${publisher} on this booking yet.`)}</p>
                         </div>
                     </section>
+
+                    {spot && campaignId && spot.status === "COMPLETED" && <RateSpaceCard campaignId={campaignId} spotId={spot.id} spaceTitle={order.listing.title} reviewed={spot.reviewed} />}
 
                     <section className="rounded-lg border border-line bg-white px-4 py-4">
                         <h3 className="text-sm font-semibold text-ink">Delivery activity</h3>

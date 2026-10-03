@@ -77,7 +77,7 @@ export default function PayoutPage() {
                     <Link href="/publisher/earnings" className={brandButton}>
                         Back to payouts
                     </Link>
-                    <Link href="/publisher/earnings#statements" className={outlineButton}>
+                    <Link href="/publisher/earnings/statements" className={outlineButton}>
                         View statements
                     </Link>
                     <Link href={`/publisher/help/new?type=payout&ref=${data.id}`} className={outlineButton}>

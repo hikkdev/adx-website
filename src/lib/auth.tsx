@@ -4,8 +4,8 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, onSessionEnded, tokens } from "./api-client";
 import { useCart } from "./cart";
-import { authService, isChallenge, isSignupHandoff, normaliseEmail, normaliseMobile, pendingChallenge, type DoorResult, type SendOtpResult, type SessionTokens, type SessionUser, type SignupHandoff, type TwoFactorChallenge } from "@/services/auth";
-import { partyService, type AccountType, type Party } from "@/services/party";
+import { authService, isChallenge, isSignupHandoff, normaliseEmail, normaliseMobile, pendingChallenge, workspaceOwes, type DoorResult, type SendOtpResult, type SessionTokens, type SessionUser, type SignupHandoff, type TwoFactorChallenge } from "@/services/auth";
+import { partyService, ROLE_OF, type AccountType, type Party } from "@/services/party";
 
 /**
  * The session on the web: the same account the apps and the console see.
@@ -18,7 +18,7 @@ import { partyService, type AccountType, type Party } from "@/services/party";
  * the token carries; a new account has none until it chooses one on
  * `/choose-workspace`, the apps' first question after the first OTP.
  */
-type Status = "restoring" | "signed-out" | "signed-in";
+export type Status = "restoring" | "signed-out" | "signed-in";
 
 /**
  * What a sign-in door came to: a session; ED-1's hand-off to the phone
@@ -59,7 +59,8 @@ const AuthContext = React.createContext<AuthValue | null>(null);
 
 function partiesOf(user: SessionUser | null): Party[] {
     if (!user) return [];
-    return (["ADVERTISER", "PUBLISHER"] as Party[]).filter((party) => user.roles.includes(party));
+    // PP-W: a print partner's role is PARTNER.
+    return (["ADVERTISER", "PUBLISHER", "PRINT_PARTNER"] as Party[]).filter((party) => user.roles.includes(ROLE_OF[party]));
 }
 
 const PARTY_KEY = "adx.web.party";
@@ -221,29 +222,48 @@ export function useAuth(): AuthValue {
 }
 
 /**
- * Wraps a workspace: no session, to sign-in (and back here after); ED-1, an
- * email still to prove, to the email step (and back here after); a session
- * without the side the workspace needs, to the workspace chooser.
+ * The session where there is one; null outside an AuthProvider (a screen
+ * drawn on its own, as in a test). For parts that read the signed-in person
+ * when they can — the order age gate — and still work without one.
  */
+export function useOptionalAuth(): AuthValue | null {
+    return React.useContext(AuthContext);
+}
+
+/** What a workspace does with this visitor: draws, waits for the session to be read, or sends them on. */
+export type WorkspaceGate = { kind: "draw" } | { kind: "wait" } | { kind: "go"; href: string };
+
+/**
+ * The workspace's door, in order: no session, to sign-in; ED-1, an email
+ * still to prove, to the email step; a session without the side the
+ * workspace needs, to the workspace chooser (a print partner's, to its
+ * application). Then (29 Sep 2026) what the chooser asks once and never
+ * again: QR-6's consent — a legal step, so no workspace opens without it —
+ * and QR-22's basics, the two names, which the basics step opens
+ * prefilled. The date of birth is not among them (29 Sep 2026): it is asked
+ * only when an order is placed. `here` is where to come back to afterwards.
+ */
+export function workspaceGate(session: { status: Status; user: SessionUser | null; parties: Party[]; needsEmail: boolean }, needed: Party, here: string): WorkspaceGate {
+    if (session.status === "restoring") return { kind: "wait" };
+    const back = encodeURIComponent(here);
+    if (session.status === "signed-out" || !session.user) return { kind: "go", href: `/sign-in?next=${back}` };
+    if (session.needsEmail) return { kind: "go", href: `/verify-email?next=${back}` };
+    if (!session.parties.includes(needed)) return { kind: "go", href: needed === "PRINT_PARTNER" ? "/partner/apply" : `/choose-workspace?party=${needed}` };
+    if (workspaceOwes(session.user, needed)) return { kind: "go", href: `/choose-workspace?next=${back}` };
+    return { kind: "draw" };
+}
+
+/** Wraps a workspace: draws it only once `workspaceGate` says so, and sends the visitor on when it says where. */
 export function RequireParty({ party: needed, children }: { party: Party; children: React.ReactNode }) {
-    const { status, parties, needsEmail } = useAuth();
+    const { status, user, parties, needsEmail } = useAuth();
     const router = useRouter();
 
     React.useEffect(() => {
-        if (status === "restoring") return;
-        const next = window.location.pathname + window.location.search;
-        if (status === "signed-out") {
-            router.replace(`/sign-in?next=${encodeURIComponent(next)}`);
-            return;
-        }
-        if (needsEmail) {
-            router.replace(`/verify-email?next=${encodeURIComponent(next)}`);
-            return;
-        }
-        if (!parties.includes(needed)) router.replace(`/choose-workspace?party=${needed}`);
-    }, [status, parties, needed, needsEmail, router]);
+        const gate = workspaceGate({ status, user, parties, needsEmail }, needed, window.location.pathname + window.location.search);
+        if (gate.kind === "go") router.replace(gate.href);
+    }, [status, user, parties, needed, needsEmail, router]);
 
-    if (status !== "signed-in" || needsEmail || !parties.includes(needed)) {
+    if (workspaceGate({ status, user, parties, needsEmail }, needed, "").kind !== "draw") {
         return (
             <div className="flex min-h-[60vh] items-center justify-center">
                 <p className="text-sm text-dim">Checking your session…</p>

@@ -4,20 +4,32 @@ import * as React from "react";
 import Link from "next/link";
 import { ApiError, messageOf } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { FLAG_INSTANT_BOOKING, useFlag } from "@/lib/flags";
+import { FLAG_PROMOTION_BOOSTS } from "@/services/promotions";
 import { listingEditorService, rateLabel, reviewStageOf, shortName, statusChip, type MyListing } from "@/services/listing-editor";
+import { AvailabilityCard, BelowFloorCard, ListingSpecs, RightsCard, VerificationCard } from "@/components/listings/listing-cards";
+import { ListingPills } from "@/components/listings/listing-pills";
 import { EDIT_SECTIONS } from "./form-model";
 import { Note, Problem } from "./fields";
+import { SuggestedRateCard } from "./suggested-rate";
 
 type State = { key: string; listing: MyListing | null; formatName: string | null; error: string | null };
 
 /**
  * 09 · 01 · Listing overview (5204:82990): the spot as it stands — its
- * cover, its chip, its format, address and rate — and the nine sections a
- * publisher can edit, each with its Edit. A listing still in review says so
- * at the foot and links to the review status.
+ * cover, its chip, its format, address and rate — then the whole of the
+ * app's Listing details (specs, price, selling story, the space itself)
+ * beside what needs the publisher: below ADX's floor with "Raise the rate",
+ * ADX's suggested rate, the right to the space and its renewal, the
+ * re-verification clock, and the blocked dates. The nine sections a
+ * publisher can edit follow, each with its Edit. A listing still in review
+ * says so at the foot and links to the review status.
  */
 export function ListingOverview({ listingId }: { listingId: string }) {
     const [state, setState] = React.useState<State>({ key: "", listing: null, formatName: null, error: null });
+    const [tick, setTick] = React.useState(0);
+    const instant = useFlag(FLAG_INSTANT_BOOKING);
+    const boosts = useFlag(FLAG_PROMOTION_BOOSTS);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -46,7 +58,7 @@ export function ListingOverview({ listingId }: { listingId: string }) {
         return () => {
             cancelled = true;
         };
-    }, [listingId]);
+    }, [listingId, tick]);
 
     const ready = state.key === listingId;
     const listing = ready ? state.listing : null;
@@ -67,10 +79,19 @@ export function ListingOverview({ listingId }: { listingId: string }) {
                         Listing overview
                     </p>
                     <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink">{listing?.title ?? (ready ? "Listing" : "Loading…")}</h1>
+                    {listing?.displayId && <p className="mt-1 text-sm text-dim">{listing.displayId}</p>}
                 </div>
-                <Link href={publicHref} className={cn("inline-flex h-[50px] items-center rounded-md border border-line bg-white px-6 text-sm font-semibold text-ink shadow-sm hover:border-ink", listing?.status !== "ACTIVE" && "pointer-events-none opacity-60")} aria-disabled={listing?.status !== "ACTIVE"}>
-                    Preview public listing
-                </Link>
+                <div className="flex flex-wrap gap-3">
+                    {/* LM-1: a live listing can be sponsored — shown first in search and similar listings. */}
+                    {boosts && listing?.status === "ACTIVE" && (
+                        <Link href={`/publisher/promotions/new?listingId=${encodeURIComponent(listing.id)}`} className="inline-flex h-[50px] items-center rounded-md border border-line bg-white px-6 text-sm font-semibold text-ink shadow-sm hover:border-ink">
+                            Sponsor this listing
+                        </Link>
+                    )}
+                    <Link href={publicHref} className={cn("inline-flex h-[50px] items-center rounded-md border border-line bg-white px-6 text-sm font-semibold text-ink shadow-sm hover:border-ink", listing?.status !== "ACTIVE" && "pointer-events-none opacity-60")} aria-disabled={listing?.status !== "ACTIVE"}>
+                        Preview public listing
+                    </Link>
+                </div>
             </div>
 
             {ready && state.error && <div className="mt-6"><Problem>{state.error}</Problem></div>}
@@ -86,12 +107,32 @@ export function ListingOverview({ listingId }: { listingId: string }) {
                         </span>
                     )}
                     <p className="mt-3 text-lg font-semibold text-ink">{state.formatName ?? listing?.subType ?? listing?.placement ?? (listing ? listing.category.charAt(0) + listing.category.slice(1).toLowerCase() : "")}</p>
-                    <p className="mt-2 text-sm text-dim">{listing ? [listing.address, listing.city].filter(Boolean).join(", ") : ""}</p>
+                    <p className="mt-2 text-sm text-dim">{listing ? [listing.placement, listing.address, listing.city].filter(Boolean).join(", ") : ""}</p>
                     <p className="mt-2 text-sm font-medium text-ink">{listing ? rateLabel(listing) : ""}</p>
+                    {listing && <ListingPills row={listing} instant={instant} className="mt-3" />}
+                    {listing?.description && <p className="mt-3 line-clamp-3 max-w-[760px] text-sm text-dim">{listing.description}</p>}
                 </div>
             </section>
 
-            <section className="mt-5 rounded-xl border border-line bg-white px-5">
+            {listing?.status === "REJECTED" && listing.rejectionReason && (
+                <div className="mt-5 rounded-md border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">ADX did not accept this one: {listing.rejectionReason}</div>
+            )}
+
+            {listing && (
+                <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_400px]">
+                    <ListingSpecs listing={listing} formatName={state.formatName} instant={instant} />
+                    <div className="grid content-start gap-5">
+                        <BelowFloorCard key={`${listing.id}:${listing.ratePerDay ?? ""}`} listing={listing} />
+                        <SuggestedRateCard listingId={listing.id} onAccepted={() => setTick((n) => n + 1)} />
+                        <VerificationCard listing={listing} />
+                        <RightsCard listing={listing} />
+                        <AvailabilityCard listingId={listing.id} />
+                    </div>
+                </div>
+            )}
+
+            <h2 className="mt-8 text-base font-semibold text-ink">Edit this listing</h2>
+            <section className="mt-3 rounded-xl border border-line bg-white px-5">
                 {EDIT_SECTIONS.map((section) => {
                     const target = section.key === "details" && listing?.category === "TRANSIT" ? "vehicle" : section.key;
                     return (
@@ -107,6 +148,7 @@ export function ListingOverview({ listingId }: { listingId: string }) {
                     );
                 })}
             </section>
+            <p className="mt-3 text-xs text-dim">The address and whether the listing is live are not editable here. A space at a new address is a new listing, and ADX decides when one goes on the marketplace.</p>
 
             {listing && stage !== "LIVE" && (
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-4">

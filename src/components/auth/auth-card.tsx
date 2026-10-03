@@ -1,3 +1,4 @@
+import { BrandWordmark } from "@/lib/brand";
 import { cn } from "@/lib/utils";
 
 /**
@@ -8,7 +9,7 @@ export function AuthCard({ children, className }: { children: React.ReactNode; c
     return (
         <section className={cn("w-full max-w-[530px] rounded-lg border border-line bg-white shadow-card", className)}>
             <div className="border-b border-line px-10 py-8">
-                <img src="/brand/adx-wordmark-red.svg" alt="ADX" className="h-[30px] w-auto" />
+                <BrandWordmark className="h-[30px] w-auto" />
             </div>
             <div className="px-10 pb-10 pt-7">{children}</div>
         </section>

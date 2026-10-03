@@ -1,7 +1,11 @@
 import Link from "next/link";
+import { SiteFooter } from "@/components/site/site-footer";
+import { SiteHeader } from "@/components/site/site-header";
 
 export default function NotFound() {
     return (
+        <div className="flex min-h-screen flex-col bg-ground">
+            <SiteHeader />
         <main className="mx-auto flex min-h-[70vh] max-w-[520px] flex-col items-center justify-center px-5 py-16 text-center">
             <p className="text-[40px] font-extrabold tracking-tight text-ink">404</p>
             <h1 className="mt-2 text-[28px] font-semibold text-ink">Nothing here</h1>
@@ -10,5 +14,7 @@ export default function NotFound() {
                 Explore spaces
             </Link>
         </main>
+            <SiteFooter />
+        </div>
     );
 }

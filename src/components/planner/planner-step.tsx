@@ -27,14 +27,14 @@ export interface StepProps {
  * is the brand screen before a draft exists; every later screen carries
  * the draft's id in its path.
  */
-export function PlannerStep({ campaignId, step }: { campaignId: string | null; step: PlannerStepId }) {
+export function PlannerStep({ campaignId, step, brandId = null }: { campaignId: string | null; step: PlannerStepId; brandId?: string | null }) {
     const meta = STEP_META[step];
     const { state, campaign, save, replace, reload } = useCampaign(campaignId);
 
     if (!campaignId) {
         return (
             <PlannerShell title="Create a campaign" subtitle={meta.subtitle} bar={meta.bar}>
-                <BrandStep campaign={null} save={save} replace={replace} reload={reload} />
+                <BrandStep campaign={null} save={save} replace={replace} reload={reload} brandId={brandId} />
             </PlannerShell>
         );
     }

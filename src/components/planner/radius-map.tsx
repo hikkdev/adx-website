@@ -81,7 +81,7 @@ export function RadiusMap({
 }) {
     const initial: [number, number] = center ? [center.latitude, center.longitude] : pins[0] ? [pins[0].latitude, pins[0].longitude] : BENGALURU;
     return (
-        <div className="overflow-hidden rounded-lg bg-[#f0f2f1]" style={{ height }}>
+        <div className="relative isolate overflow-hidden rounded-lg bg-[#f0f2f1]" style={{ height }}>
             <MapContainer center={initial} zoom={zoomFor(radiusKm)} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
                 <Follow center={center} radiusKm={radiusKm} pins={pins} />

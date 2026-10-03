@@ -1,25 +1,27 @@
 import Link from "next/link";
 import { Rail } from "@/components/site/rail";
+import { pageHref } from "@/lib/site-routes";
 
 /**
  * "A little help before you book" (5204:53421): the four guide cards the
  * formats page and the how-it-works page both end on. Each card opens the
- * page that answers it.
+ * page that answers it — PB-1: a Studio page by its key, at its current
+ * address.
  */
-const GUIDES: { label: string; title: string; href: string }[] = [
-    { label: "PLANNING", title: "Choose the right format", href: "/how-it-works#find-your-spaces" },
-    { label: "CREATIVE", title: "Get your artwork ready", href: "/help#artwork" },
-    { label: "BOOKING", title: "Know what happens next", href: "/how-it-works#book-a-campaign" },
-    { label: "PUBLISHERS", title: "Make more of your space", href: "/publishers" },
+const GUIDES: { label: string; title: string; page: string; hash?: string }[] = [
+    { label: "PLANNING", title: "Choose the right format", page: "how-it-works", hash: "find-your-spaces" },
+    { label: "CREATIVE", title: "Get your artwork ready", page: "help", hash: "artwork" },
+    { label: "BOOKING", title: "Know what happens next", page: "how-it-works", hash: "book-a-campaign" },
+    { label: "PUBLISHERS", title: "Make more of your space", page: "publishers" },
 ];
 
-export function GuidesStrip({ className }: { className?: string }) {
+export function GuidesStrip({ className, title }: { className?: string; /** LM-1: the layout's title for the strip. */ title?: string | null }) {
     return (
-        <Rail title="A little help before you book" titleClassName="max-w-[376px]" gap={28} className={className}>
+        <Rail title={title ?? "A little help before you book"} titleClassName="max-w-[376px]" gap={28} className={className}>
             {GUIDES.map((guide) => (
                 <Link
                     key={guide.label}
-                    href={guide.href}
+                    href={pageHref(guide.page, {}, guide.hash ? { hash: guide.hash } : {})}
                     className="flex min-w-[280px] flex-1 basis-0 snap-start flex-col overflow-hidden rounded-[12px] bg-white shadow-[0px_4px_8px_rgba(0,0,0,0.04)] hover:shadow-card"
                 >
                     <div className="h-[299px] overflow-hidden bg-[#f1f1ee]">

@@ -16,28 +16,24 @@ declare global {
     }
 }
 
-const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-
-/** Whether a Google button will be drawn at all — the sign-in card hides its "Or continue with" rule otherwise. */
-export const hasGoogleSignIn = !!CLIENT_ID;
+/** The site's own build-time id — the fallback when `GET /auth/providers` names none. */
+export const GOOGLE_CLIENT_ID_FALLBACK = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? null;
 
 /**
  * "Continue with Google" — Google Identity Services rendering its own
- * button, whose credential is the id token `POST /auth/google` verifies. It
- * needs the web client id; without one the button is simply not drawn, so a
- * deployment that has not set it up shows nothing broken.
+ * button, whose credential is the id token `POST /auth/google` verifies.
+ * The web client id comes from `GET /auth/providers` (the env id as the
+ * fallback); the sign-in card draws this only when there is one.
  */
-export function GoogleButton({ onCredential }: { onCredential: (idToken: string) => void }) {
+export function GoogleButton({ clientId, onCredential }: { clientId: string; onCredential: (idToken: string) => void }) {
     const slot = React.useRef<HTMLDivElement>(null);
-    const [ready, setReady] = React.useState(false);
+    const [ready, setReady] = React.useState(() => typeof window !== "undefined" && !!window.google);
 
     React.useEffect(() => {
-        if (!ready || !CLIENT_ID || !slot.current || !window.google) return;
-        window.google.accounts.id.initialize({ client_id: CLIENT_ID, callback: (response) => onCredential(response.credential) });
+        if (!ready || !clientId || !slot.current || !window.google) return;
+        window.google.accounts.id.initialize({ client_id: clientId, callback: (response) => onCredential(response.credential) });
         window.google.accounts.id.renderButton(slot.current, { theme: "outline", size: "large", width: 449, text: "continue_with", shape: "rectangular" });
-    }, [ready, onCredential]);
-
-    if (!CLIENT_ID) return null;
+    }, [ready, clientId, onCredential]);
 
     return (
         <>

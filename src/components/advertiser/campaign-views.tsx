@@ -5,11 +5,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { messageOf } from "@/lib/api-client";
+import { isPrivateFileUrl, openPrivateFile, privateFileMessage } from "@/lib/private-file";
 import { PageHeading, Panel } from "@/components/workspace/page-heading";
 import { ActivityList, btnOutline, btnPrimary, btnSmall, DocRow, inputClass, KeyValue, PrivateImage, StatusChip } from "@/components/advertiser/bits";
-import { PerformanceStrip, TrackingPanel } from "@/components/advertiser/campaign-extras";
+import { LandingPagePanel, PerformanceStrip, TrackingPanel } from "@/components/advertiser/campaign-extras";
+import { RateSpaceCard } from "@/components/advertiser/rate-space-card";
 import { ReservationPanel } from "@/components/booking/reservation-panel";
+import { apiConfig } from "@/lib/api-config";
 import { reservationOpen } from "@/services/reservation";
+import { cancelConsequence, cancelledMessage, campaignsService, MULTI_MARKET_NOTE, REFUND_STATUS_LABEL, refundHeadline, type CampaignRefundView } from "@/services/campaigns";
 import {
     advertiserWorkspace,
     campaignActivity,
@@ -72,6 +76,10 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
     const brief = currentCreativeFor(campaign.creatives, null);
     const uploaded = campaign.creatives.filter((c) => c.fileUrl && c.spotId);
     const artworkInReview = status.label === "Artwork in review";
+    const kycHeld = campaign.status === "SCHEDULED" && !!campaign.launchBlockedBy?.includes("KYC");
+    const markets = campaign.targetMarkets ?? [];
+    const analyticsHref = `/advertiser/analytics/${encodeURIComponent(campaign.id)}`;
+    const destinationUrl = typeof campaign.trackingConfig?.destinationUrl === "string" ? campaign.trackingConfig.destinationUrl : null;
 
     const primary =
         campaign.status === "DRAFT" ? (
@@ -91,7 +99,7 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
     return (
         <>
             <nav className="text-sm text-dim" aria-label="Breadcrumb">
-                <Link href="/advertiser" className="hover:text-ink">
+                <Link href="/advertiser/campaigns" className="hover:text-ink">
                     Campaigns
                 </Link>
                 <span className="mx-2">/</span>
@@ -115,8 +123,23 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
             </div>
 
             <Panel className="mt-6">
-                <h2 className="text-base font-semibold text-ink">{status.label}</h2>
-                <p className="mt-2 text-sm text-dim">{campaignStatusLine(campaign)}</p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h2 className="text-base font-semibold text-ink">{status.label}</h2>
+                        <p className="mt-2 text-sm text-dim">{campaignStatusLine(campaign)}</p>
+                    </div>
+                    {/* QR-16/18: paid and booked, held until the advertiser's own verification — the label is a door. */}
+                    {kycHeld && (
+                        <Link href="/advertiser/verify" className={btnPrimary}>
+                            Verify your identity
+                        </Link>
+                    )}
+                </div>
+                {(campaign.multiMarketWarning || markets.length > 1) && (
+                    <p className="mt-4 rounded-md bg-warning-soft px-3 py-2 text-sm text-ink">
+                        {markets.length} markets — {markets.join(", ")}. {MULTI_MARKET_NOTE}.
+                    </p>
+                )}
                 {reservation && (reservationOpen(reservation) || reservation.status === "LAPSED" || reservation.status === "RETAINED") && (
                     <ReservationPanel reservation={reservation} retainPct={null} className="mt-4">
                         {campaign.status === "PENDING_PAYMENT" && (
@@ -127,6 +150,8 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
                     </ReservationPanel>
                 )}
             </Panel>
+
+            {campaign.refund && <RefundPanel refund={campaign.refund} />}
 
             {(quoted || awaitingQuote) && (
                 <Panel className="mt-4">
@@ -150,7 +175,7 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
                     </p>
                     <div className="mt-4 space-y-3">
                         {placements.map((spot) => (
-                            <SpotCard key={spot.id} spot={spot} campaign={campaign} order={spot.orderId ? orders[spot.orderId]?.order : undefined} paid={paid} />
+                            <SpotCard key={spot.id} spot={spot} campaign={campaign} order={spot.orderId ? orders[spot.orderId]?.order : undefined} paid={paid} stats={analytics?.bySpot?.find((row) => row.spotId === spot.id) ?? null} />
                         ))}
                         {placements.length === 0 && (
                             <Panel>
@@ -183,12 +208,13 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
                     </div>
 
                     {paid && <TrackingPanel campaignId={campaign.id} codes={codes} />}
-                    {paid && <PerformanceStrip analytics={analytics} />}
+                    {campaign.status !== "CANCELLED" && <LandingPagePanel campaignId={campaign.id} trackingMethod={campaign.trackingMethod} destinationUrl={destinationUrl} landingPage={campaign.landingPage} apiBase={apiConfig.baseUrl} />}
+                    {paid && <PerformanceStrip analytics={analytics} href={analyticsHref} />}
 
                     <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
                         <p className="text-sm text-dim">Need to change or cancel this campaign?</p>
                         <div className="flex flex-wrap gap-2">
-                            {(campaign.status === "DRAFT" || campaign.status === "PENDING_PAYMENT") && <CancelDoor campaign={campaign} onCancelled={reload} />}
+                            {(campaign.status === "DRAFT" || campaign.status === "PENDING_PAYMENT" || campaign.status === "SCHEDULED" || campaign.status === "LIVE") && <CancelDoor campaign={campaign} onCancelled={reload} />}
                             <Link href={`/advertiser/requests/new?campaign=${campaign.id}&topic=${campaign.status === "CANCELLED" ? "PAYMENT" : "CHANGE"}`} className={btnOutline}>
                                 Create a request
                             </Link>
@@ -227,22 +253,43 @@ export function CampaignInFlight({ data, reload }: { data: CampaignPageData; rel
 }
 
 /**
- * The advertiser's own cancel on a draft or an unpaid campaign —
- * `POST /campaigns/:id/cancel`. RF-1: a campaign whose reservation fee is
- * PAID forfeits part of it, and the confirm says so before the click.
+ * The advertiser's own cancel — `POST /campaigns/:id/cancel` — on a draft,
+ * an unpaid campaign, and (as the app allows) a paid one that is scheduled
+ * or running: a scheduled campaign's hold is released to the wallet; a
+ * running one was captured, so its unused days are valued and a refund is
+ * recorded for ADX finance, drawn on the campaign as `refund`. RF-1: a
+ * campaign whose reservation fee is PAID forfeits part of it, and the
+ * confirm names the share before the click.
  */
 function CancelDoor({ campaign, onCancelled }: { campaign: CampaignDetail; onCancelled?: () => void }) {
     const router = useRouter();
     const [open, setOpen] = React.useState(false);
     const [reason, setReason] = React.useState("");
     const [busy, setBusy] = React.useState(false);
+    const [retainPct, setRetainPct] = React.useState<number | null>(null);
     const reserved = campaign.reservation?.status === "PAID";
+    const afterPayment = campaign.status === "SCHEDULED" || campaign.status === "LIVE";
+
+    React.useEffect(() => {
+        if (!open || !reserved) return;
+        let cancelled = false;
+        advertiserWorkspace
+            .campaignReview(campaign.id)
+            .then((review) => {
+                if (!cancelled) setRetainPct(review.reservationFee?.retainPct ?? null);
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [open, reserved, campaign.id]);
+
     const cancel = async () => {
         if (busy || reason.trim().length < 3) return;
         setBusy(true);
         try {
-            await advertiserWorkspace.cancelCampaign(campaign.id, reason.trim());
-            toast.success(reserved ? "Campaign cancelled. Part of the reservation fee is kept; the rest is in your wallet." : "Campaign cancelled.");
+            const outcome = await campaignsService.cancel(campaign.id, reason.trim());
+            toast.success(reserved && !afterPayment ? "Campaign cancelled. Part of the reservation fee is kept; the rest is in your wallet." : cancelledMessage(outcome));
             setOpen(false);
             if (onCancelled) onCancelled();
             else router.refresh();
@@ -262,17 +309,11 @@ function CancelDoor({ campaign, onCancelled }: { campaign: CampaignDetail; onCan
     return (
         <div className="w-full rounded-lg border border-[#f3c1c1] bg-[#fdf2f2] p-4">
             <p className="text-sm font-semibold text-ink">Cancel this campaign?</p>
-            <p className="mt-1 text-sm text-ink">
-                {reserved
-                    ? `The spots are reserved against a ${rupees(campaign.reservation!.fee)} fee. Cancelling keeps part of that fee for ADX (the platform's retained share) and returns the rest to your wallet; the spots are released.`
-                    : campaign.status === "PENDING_PAYMENT"
-                      ? "The spots are released and nothing is charged."
-                      : "The draft is closed; nothing is charged."}
-            </p>
+            <p className="mt-1 text-sm text-ink">{cancelConsequence(campaign.status, campaign.reservation ?? null, retainPct)}</p>
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why? (a few words, kept on the record)" className={`${inputClass} mt-3`} maxLength={300} autoFocus />
             <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => void cancel()} disabled={busy || reason.trim().length < 3} className={btnPrimary}>
-                    {busy ? "Cancelling…" : reserved ? "Cancel and forfeit part of the fee" : "Yes, cancel the campaign"}
+                    {busy ? "Cancelling…" : reserved && !afterPayment ? "Cancel and forfeit part of the fee" : campaign.status === "LIVE" ? "Cancel and ask for a refund" : "Yes, cancel the campaign"}
                 </button>
                 <button type="button" onClick={() => setOpen(false)} disabled={busy} className={btnOutline}>
                     Keep it
@@ -282,7 +323,29 @@ function CancelDoor({ campaign, onCancelled }: { campaign: CampaignDetail; onCan
     );
 }
 
-function SpotCard({ spot, campaign, order, paid }: { spot: CampaignSpot; campaign: CampaignDetail; order?: AdvertiserOrder; paid: boolean }) {
+/**
+ * Lot B (Q41) / E6: the refund a cancel after capture recorded — the amount,
+ * where ADX finance stands on it, the reason the cancel gave, and the day
+ * finance decided. Drawn from `campaign.refund` alone.
+ */
+function RefundPanel({ refund }: { refund: CampaignRefundView }) {
+    const headline = refundHeadline(refund);
+    return (
+        <Panel className="mt-4">
+            <h2 className="text-base font-semibold text-ink">Refund</h2>
+            <p className={`mt-3 rounded-md px-3 py-2 text-sm ${headline.tone === "success" ? "bg-success-soft text-success" : headline.tone === "warning" ? "bg-warning-soft text-warning" : "bg-info-soft text-info"}`}>{headline.label}</p>
+            <div className="mt-3 max-w-md">
+                <KeyValue label="Amount" value={rupees(refund.amount)} strong />
+                <KeyValue label="Status" value={REFUND_STATUS_LABEL[refund.status] ?? refund.status} />
+                {refund.reason && <KeyValue label="Reason" value={refund.reason} />}
+                {refund.releasedAt && <KeyValue label={refund.status === "REJECTED" ? "Decided" : "Released"} value={shortDate(refund.releasedAt)} />}
+            </div>
+            <p className="mt-2 text-xs text-dim">A released refund is credited to your ADX wallet; withdraw it from Wallet &amp; billing.</p>
+        </Panel>
+    );
+}
+
+function SpotCard({ spot, campaign, order, paid, stats }: { spot: CampaignSpot; campaign: CampaignDetail; order?: AdvertiserOrder; paid: boolean; stats?: { scans: number; clicks: number } | null }) {
     const creative = currentCreativeFor(campaign.creatives, spot.id);
     const creativeLabel = creative ? CREATIVE_LABEL[creative.status] : { label: paid ? "Artwork not uploaded" : "Artwork after payment", tone: "neutral" as const };
     const proof = order ? proofStatus(order) : null;
@@ -297,6 +360,11 @@ function SpotCard({ spot, campaign, order, paid }: { spot: CampaignSpot; campaig
                     {spotLine(spot, campaign.startDate, campaign.endDate)}
                 </p>
                 <p className="mt-1 text-sm font-semibold text-ink">{rupees(spot.lineTotal)} media cost</p>
+                {stats && (stats.scans > 0 || stats.clicks > 0) && (
+                    <p className="mt-0.5 text-xs text-dim">
+                        {stats.scans.toLocaleString("en-IN")} scan{stats.scans === 1 ? "" : "s"} · {stats.clicks.toLocaleString("en-IN")} reached your page
+                    </p>
+                )}
             </div>
             <div className="flex flex-col items-end gap-2">
                 {showProof && proof ? (
@@ -317,6 +385,7 @@ function SpotCard({ spot, campaign, order, paid }: { spot: CampaignSpot; campaig
                     </>
                 )}
             </div>
+            {spot.status === "COMPLETED" && <RateSpaceCard campaignId={campaign.id} spotId={spot.id} spaceTitle={spot.listing.title} reviewed={spot.reviewed} className="w-full" />}
         </div>
     );
 }
@@ -348,7 +417,7 @@ export function CampaignCompleted({ data }: { data: CampaignPageData }) {
                 subtitle={[category ? `${categoryLabel(category)} campaign` : null, city, dateRange(campaign.startDate, campaign.endDate)].filter(Boolean).join(" · ")}
                 actions={
                     <>
-                        <Link href="/advertiser" className={btnOutline}>
+                        <Link href="/advertiser/campaigns" className={btnOutline}>
                             Back to campaigns
                         </Link>
                         <Link href={`/advertiser/proofs?campaign=${encodeURIComponent(campaign.name)}`} className={btnOutline}>
@@ -394,6 +463,7 @@ export function CampaignCompleted({ data }: { data: CampaignPageData }) {
                                         ) : (
                                             <StatusChip label="Completed" tone="success" className="h-7 px-4" />
                                         )}
+                                        {spot.status === "COMPLETED" && <RateSpaceCard campaignId={campaign.id} spotId={spot.id} spaceTitle={spot.listing.title} reviewed={spot.reviewed} className="w-full" />}
                                     </div>
                                 );
                             })}
@@ -405,15 +475,21 @@ export function CampaignCompleted({ data }: { data: CampaignPageData }) {
                         <p className="mt-1 text-xs text-dim">Files provided by {publishers.length ? publishers.join(", ") : "the publisher"} for your booking</p>
                         <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink">{allVerified ? "Verified documents" : "Documents"}</p>
                         <div className="mt-3 space-y-3">
-                            {photos.map((photo) => (
-                                <DocRow key={photo.id} title={photo.label || PHOTO_KIND_LABEL[photo.kind] || "Photo"} line={`${fileNameOf(photo.url) || photo.kind.toLowerCase()} · ${shortDate(photo.capturedAt)}`} href={/^https?:/.test(photo.url) ? photo.url : `/advertiser/proofs/${photo.orderId}`} external={/^https?:/.test(photo.url)} />
-                            ))}
+                            {photos.map((photo) => {
+                                const title = photo.label || PHOTO_KIND_LABEL[photo.kind] || "Photo";
+                                const line = `${fileNameOf(photo.url) || photo.kind.toLowerCase()} · ${shortDate(photo.capturedAt)}`;
+                                /* ST-2 (28 Sep 2026): a private file opens with the bearer; a bare link to it is a 401. */
+                                if (isPrivateFileUrl(photo.url)) {
+                                    return <DocRow key={photo.id} title={title} line={line} onClick={() => void openPrivateFile(photo.url, title).catch((caught: unknown) => toast.error(privateFileMessage(caught)))} />;
+                                }
+                                return <DocRow key={photo.id} title={title} line={line} href={/^https?:/.test(photo.url) ? photo.url : `/advertiser/proofs/${photo.orderId}`} external={/^https?:/.test(photo.url)} />;
+                            })}
                             {photos.length === 0 && <p className="rounded-lg border border-line bg-white px-4 py-5 text-sm text-dim">No files were filed for this campaign.</p>}
                         </div>
                     </div>
 
                     <TrackingPanel campaignId={campaign.id} codes={codes} />
-                    <PerformanceStrip analytics={analytics} />
+                    <PerformanceStrip analytics={analytics} href={`/advertiser/analytics/${encodeURIComponent(campaign.id)}`} />
                 </div>
 
                 <div className="space-y-4">

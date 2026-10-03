@@ -19,7 +19,7 @@ interface AgreementText {
  * `POST /supply/agreements/accept-platform` with the publisher's own id,
  * exactly as the app records it, and the submit is tried again.
  */
-export function AgreementGate({ onAccepted, onClose }: { onAccepted: () => void; onClose: () => void }) {
+export function AgreementGate({ onAccepted, onClose, intro = "Read and accept the ADX publisher agreement to send this listing for review. It is saved as a draft until then." }: { onAccepted: () => void; onClose: () => void; intro?: string }) {
     const [text, setText] = React.useState<{ loaded: boolean; agreement: AgreementText | null; error: string | null }>({ loaded: false, agreement: null, error: null });
     const [busy, setBusy] = React.useState(false);
     const [problem, setProblem] = React.useState<string | null>(null);
@@ -60,7 +60,7 @@ export function AgreementGate({ onAccepted, onClose }: { onAccepted: () => void;
                     <h2 id="agreement-title" className="text-lg font-semibold text-ink">
                         {text.agreement?.title ?? "ADX publisher agreement"}
                     </h2>
-                    <p className="mt-1 text-sm text-dim">Read and accept the ADX publisher agreement to send this listing for review. It is saved as a draft until then.</p>
+                    <p className="mt-1 text-sm text-dim">{intro}</p>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto px-6 py-5 text-sm leading-6 text-ink" onScroll={(event) => {
                     const el = event.currentTarget;

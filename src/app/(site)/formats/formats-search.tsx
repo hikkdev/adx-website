@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, MapPin, User } from "lucide-react";
+import { CityField } from "@/components/site/city-field";
 import { cn } from "@/lib/utils";
 
 function dateLabel(from: string, to: string): string {
@@ -24,9 +25,10 @@ export function FormatsSearch({ className }: { className?: string }) {
     const [display, setDisplay] = React.useState("");
     const [datesOpen, setDatesOpen] = React.useState(false);
 
-    const search = (next: { display?: string } = {}) => {
+    const search = (next: { display?: string; city?: string } = {}) => {
         const params = new URLSearchParams();
-        if (city.trim()) params.set("city", city.trim());
+        const place = (next.city ?? city).trim();
+        if (place) params.set("city", place);
         if (from) params.set("from", from);
         if (to) params.set("to", to);
         const chosen = next.display ?? display;
@@ -43,16 +45,15 @@ export function FormatsSearch({ className }: { className?: string }) {
                 search();
             }}
         >
-            <label className="flex min-w-0 flex-1 items-center gap-3 border-r border-[rgba(204,204,204,0.5)] px-6 py-[18px]">
-                <MapPin className="size-5 shrink-0 text-ink" aria-hidden />
-                <input
-                    value={city}
-                    onChange={(event) => setCity(event.target.value)}
-                    placeholder="Bengaluru"
-                    aria-label="City"
-                    className="min-w-0 flex-1 bg-transparent text-sm font-medium leading-5 text-ink placeholder:text-dim focus:outline-none"
-                />
-            </label>
+            <CityField
+                value={city}
+                onChange={setCity}
+                onPick={(picked) => search({ city: picked.name })}
+                placeholder="Bengaluru"
+                icon={<MapPin className="size-5 shrink-0 text-ink" aria-hidden />}
+                className="min-w-0 flex-1 border-r border-[rgba(204,204,204,0.5)] px-6 py-[18px]"
+                inputClassName="leading-5"
+            />
             <div className="relative flex min-w-0 flex-1 border-r border-[rgba(204,204,204,0.5)]">
                 <button type="button" onClick={() => setDatesOpen((open) => !open)} className="flex w-full items-center gap-3 px-6 py-[18px] text-left text-sm font-medium leading-5 text-dim" aria-expanded={datesOpen} aria-label="Dates">
                     <Calendar className="size-5 shrink-0 text-ink" aria-hidden />

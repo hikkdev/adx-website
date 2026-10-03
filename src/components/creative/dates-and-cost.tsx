@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { ClashList } from "@/components/booking/clash-hint";
 import type { CreativeProps } from "@/components/creative/creative-screen";
 import { DateField } from "@/components/planner/fields";
 import { InlineError, StepActions, TaskCard } from "@/components/planner/planner-shell";
@@ -118,7 +119,10 @@ export function DatesAndCost({ campaign, save, replace, returnHref }: CreativePr
                         <p className="text-sm text-dim">{spots.length === 0 ? "No spaces on this booking yet — the cost follows the spaces you choose." : "Pricing these dates…"}</p>
                     )}
                     {current && current.clashes.length > 0 && (
-                        <p className="mt-4 text-sm text-[#8d0b0c]">No slot left on these dates at {current.clashes.map((c) => c.title).join(", ")}. Try other dates or change spaces.</p>
+                        <>
+                            <p className="mt-4 text-sm text-[#8d0b0c]">No slot left on these dates at {current.clashes.map((c) => c.title).join(", ")}. Try other dates or change spaces.</p>
+                            <ClashList className="mt-3" clashes={current.clashes} length={current.days || days} quantityOf={(spotId) => current.lines.find((l) => l.spotId === spotId)?.quantity} campaignDates={{ from, to }} />
+                        </>
                     )}
                 </div>
             </TaskCard>

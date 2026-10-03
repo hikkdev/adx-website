@@ -140,15 +140,17 @@ export function TriggersStep({ campaign, save }: StepProps) {
                     <div className="mt-6 rounded-lg bg-ground px-5 py-5">
                         <p className="text-base font-semibold text-ink">Holiday or event</p>
                         <p className="mt-2 text-sm text-dim">Line the campaign up with a date in the calendar.</p>
-                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        {/* Form symmetry: the chosen range rides in the dates' label, so the pair keeps one height. */}
+                        <div className="mt-4 grid items-start gap-4 md:grid-cols-2">
                             <LabeledInput label="Event name" value={eventName} onChange={setEventName} placeholder="Festive collection launch" />
                             <div>
-                                <p className="mb-2 text-sm font-medium text-ink">Event dates</p>
+                                <p className="mb-2 text-sm font-medium text-ink">
+                                    Event dates <span className="font-normal text-dim">· {formatDateRange(startsAt, endsAt)}</span>
+                                </p>
                                 <div className="grid grid-cols-2 gap-2">
                                     <DateField label="From" value={startsAt} onChange={(iso) => { setStartsAt(iso); if (iso > endsAt) setEndsAt(iso); }} native />
                                     <DateField label="To" value={endsAt} onChange={setEndsAt} min={startsAt} native />
                                 </div>
-                                <p className="mt-2 text-sm text-dim">{formatDateRange(startsAt, endsAt)}</p>
                             </div>
                         </div>
                         <p className="mt-4 text-sm font-medium text-ink">Event type</p>

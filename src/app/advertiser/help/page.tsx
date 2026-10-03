@@ -6,6 +6,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeading } from "@/components/workspace/page-heading";
 import { useAdvertiser } from "@/app/advertiser/layout";
 import { btnPrimary } from "@/components/advertiser/bits";
+import { HelpExtras } from "@/components/support/help-extras";
 
 interface Topic {
     id: string;
@@ -20,7 +21,7 @@ const TOPICS: Topic[] = [
         id: "artwork",
         title: "Artwork and approval",
         body: "Check the file requirements and review status in your campaign. Payment reserves spaces; it does not approve the artwork.",
-        link: { label: "Choose a campaign", href: "/advertiser" },
+        link: { label: "Choose a campaign", href: "/advertiser/campaigns" },
     },
     {
         id: "payments",
@@ -44,7 +45,8 @@ const TOPICS: Topic[] = [
 
 /**
  * DR 12 · 07 · 13 · Help & support (5204:75203): the request door and the
- * four help topics as an accordion, the first one open.
+ * four help topics as an accordion, the first one open — and, between them,
+ * the rest of the app's support hub: live chat, feedback, a rating, disputes.
  */
 export default function HelpPage() {
     const advertiser = useAdvertiser();
@@ -66,6 +68,8 @@ export default function HelpPage() {
                     </Link>
                 </div>
             </section>
+
+            <HelpExtras party="ADVERTISER" />
 
             <section className="mt-4 rounded-lg border border-line bg-white p-6">
                 <h2 className="text-base font-semibold text-ink">Help topics</h2>

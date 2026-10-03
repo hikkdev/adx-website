@@ -91,7 +91,9 @@ export const paymentsService = {
         return answer.filter((row): row is GatewayStatus => !!row && typeof row === "object" && typeof (row as GatewayStatus).gateway === "string");
     },
     /** RF-1: `purpose: 'RESERVATION_FEE'` collects the fee instead of the total. UP-1: `upiId` asks Cashfree for a collect request, or prefills Razorpay's VPA. */
-    createIntent: (body: { campaignId: string; gateway: PaymentGateway; purpose?: PaymentPurpose; upiId?: string }) => api.post<PaymentIntent>("/payments/intents", body),
+    /** LM-1: `adBookingId` pays a display ad, `listingBoostId` a sponsored listing — one of the three. */
+    createIntent: (body: ({ campaignId: string } | { adBookingId: string } | { listingBoostId: string }) & { gateway: PaymentGateway; purpose?: PaymentPurpose; upiId?: string }) =>
+        api.post<PaymentIntent>("/payments/intents", body),
     get: (id: string) => api.get<PaymentSummary>(`/payments/${encodeURIComponent(id)}`),
     confirm: (id: string, body: { gatewayPaymentId: string; signature: string; gatewayOrderId?: string }) => api.post<PaymentSummary>(`/payments/${encodeURIComponent(id)}/confirm`, body),
     /** `GET /payments/:id/return` — the backend's own status page; the web reads the row instead, but the URL is here for a link. */

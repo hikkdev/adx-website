@@ -35,7 +35,90 @@ export class ApiError extends Error {
     }
 
     retryAfterHeader: number | null = null;
+
+    /** The feature a 503 FEATURE_OFF names (`details.key`), or null for any other failure. */
+    get featureKey(): string | null {
+        if (this.status !== 503 || this.code !== FEATURE_OFF) return null;
+        const key = (this.details as { key?: unknown } | undefined)?.key;
+        return typeof key === "string" && key.trim() !== "" ? key : null;
+    }
 }
+
+/* ------------------------------------------------------------------ */
+/* Kill switches                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The backend's kill switch on a route — `requireFeature(key)` answers 503
+ * `FEATURE_OFF { key }` when the platform has switched that feature off for
+ * this caller. Mapped here, once, so every screen reads it the same way:
+ * `isFeatureOff(caught, key?)` in a catch, and every listener told the key
+ * (lib/flags.tsx's FlagsProvider is the one that matters), so a switch
+ * flipped mid-session turns the feature off wherever it is drawn — the
+ * entry points hide and the section says it is switched off — not only on
+ * the screen whose call failed.
+ */
+export const FEATURE_OFF = "FEATURE_OFF";
+
+/** Whether a failure is the platform's kill switch — for one feature when `key` is given. */
+export function isFeatureOff(caught: unknown, key?: string): boolean {
+    if (!(caught instanceof ApiError) || caught.status !== 503 || caught.code !== FEATURE_OFF) return false;
+    return key === undefined || caught.featureKey === key;
+}
+
+type FeatureOffListener = (key: string) => void;
+const featureOffListeners = new Set<FeatureOffListener>();
+
+/** Told the key of every 503 FEATURE_OFF any call receives. */
+export function onFeatureOff(listener: FeatureOffListener): () => void {
+    featureOffListeners.add(listener);
+    return () => {
+        featureOffListeners.delete(listener);
+    };
+}
+
+function reportFeatureOff(error: ApiError): ApiError {
+    const key = error.featureKey;
+    if (key) featureOffListeners.forEach((listener) => listener(key));
+    return error;
+}
+
+/* ------------------------------------------------------------------ */
+/* The order age rule                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 29 Sep 2026 (the owner: "You don't need to be over 18 to use ADX, but you
+ * do need to be over 18 to place orders"). Every order door — a campaign's
+ * checkout, reservation and fee, a design quote accepted, any payment
+ * intent (a bank transfer too), a display ad or a sponsored listing, a plan
+ * bought, paid or set to auto-renew — answers 403 `AGE_REQUIRED { reason,
+ * self }` when the person ordering has no date of birth on file (`MISSING`)
+ * or is under 18 (`UNDER_18`). `self` is false when someone else — an
+ * agent, ADX — acts for the account. Read here, once; the screens draw it
+ * with `components/checkout/age-gate.tsx`.
+ */
+export const AGE_REQUIRED = "AGE_REQUIRED";
+
+export type AgeReason = "MISSING" | "UNDER_18";
+
+export interface AgeRefusal {
+    reason: AgeReason;
+    /** True when the signed-in person is the one ordering — the only case they can answer on the spot. */
+    self: boolean;
+    /** The server's own sentence. */
+    message: string;
+}
+
+/** The refusal an order door gave, or null for any other failure. A reason the server did not name is read as MISSING. */
+export function ageRefusalOf(caught: unknown): AgeRefusal | null {
+    if (!(caught instanceof ApiError) || caught.code !== AGE_REQUIRED) return null;
+    const details = (caught.details ?? {}) as { reason?: unknown; self?: unknown };
+    return { reason: details.reason === "UNDER_18" ? "UNDER_18" : "MISSING", self: details.self !== false, message: caught.message };
+}
+
+/** Whether a failure is the order age rule (403 `AGE_REQUIRED`). */
+export const isAgeRequired = (caught: unknown): boolean => ageRefusalOf(caught) !== null;
 
 /* ------------------------------------------------------------------ */
 /* Token storage                                                       */
@@ -201,7 +284,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
         );
         const retryAfter = Number(response.headers.get("Retry-After"));
         if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterHeader = retryAfter;
-        throw error;
+        throw reportFeatureOff(error);
     }
     return (envelope.data ?? (payload as T)) as T;
 }
@@ -214,7 +297,7 @@ export async function apiFetchEnvelope<T, M extends object = Record<string, neve
     const response = await send(path, options);
     const payload = (await response.json()) as { success?: boolean; data?: T; error?: { code?: string; message?: string; details?: unknown } } & M;
     if (!response.ok || payload.success === false) {
-        throw new ApiError(response.status, payload.error?.code ?? "REQUEST_FAILED", payload.error?.message ?? "Something went wrong.", payload.error?.details);
+        throw reportFeatureOff(new ApiError(response.status, payload.error?.code ?? "REQUEST_FAILED", payload.error?.message ?? "Something went wrong.", payload.error?.details));
     }
     return payload as { data: T } & M;
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
+import { FileSpreadsheet } from "lucide-react";
 import { CATEGORY_OPTIONS, offeredMediaTypes, offeredVenues, shortName, type Catalogue, type ListingCategory } from "@/services/listing-editor";
 import { ChoiceList } from "./choice-list";
 import { Note } from "./fields";
@@ -12,10 +14,17 @@ export interface StepProps {
     catalogue: Catalogue | null;
 }
 
-/** 01 · Ad space category (5204:75982): the four cards, and the line about business verification. */
-export function CategoryStep({ form, set, kycVerified }: StepProps & { kycVerified: boolean }) {
+/**
+ * 01 · Ad space category (5204:75982): the four cards, and the line about
+ * business verification. QR-5: a publisher with more than three spaces is
+ * pointed at the sheet upload — the page the ADX app sends them to — and may
+ * still carry on here one at a time. QR-3: until the basics are in, the step
+ * says what is missing, since the submit would be refused without them.
+ */
+export function CategoryStep({ form, set, kycVerified, missingBasics = null }: StepProps & { kycVerified: boolean; missingBasics?: { words: string; href: string } | null }) {
     return (
         <div className="space-y-6">
+            <MissingBasicsNotice missingBasics={missingBasics} />
             <ChoiceList
                 options={CATEGORY_OPTIONS.map((c) => ({ id: c.id, title: c.title, description: c.description }))}
                 value={form.category}
@@ -25,10 +34,49 @@ export function CategoryStep({ form, set, kycVerified }: StepProps & { kycVerifi
                 }}
                 forceSearch={false}
             />
+            <CategoryExtras kycVerified={kycVerified} />
+        </div>
+    );
+}
+
+/** QR-3: the line over the category cards while the basics are missing, since the submit would be refused without them. */
+export function MissingBasicsNotice({ missingBasics }: { missingBasics: { words: string; href: string } | null }) {
+    if (!missingBasics) return null;
+    return (
+        <div role="status" className="rounded-md border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">
+            ADX needs your {missingBasics.words} before a listing can be sent for review. You can prepare it now —{" "}
+            <Link href={missingBasics.href} className="font-semibold underline underline-offset-4">
+                complete your details
+            </Link>{" "}
+            before you submit.
+        </div>
+    );
+}
+
+/**
+ * What the category step draws under its cards, whichever list the cards
+ * came from (FL-1: the flow's options, or the baked four): the sheet
+ * nudge (QR-5) and the business-verification line.
+ */
+export function CategoryExtras({ kycVerified }: { kycVerified: boolean }) {
+    return (
+        <>
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-line bg-ground px-4 py-3.5 md:flex-nowrap">
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <FileSpreadsheet className="mt-0.5 size-5 shrink-0 text-brand-bright" aria-hidden />
+                    <div>
+                        <p className="text-sm font-semibold text-ink">Listing more than three spaces? Use a sheet</p>
+                        <p className="mt-0.5 text-xs text-dim">Upload one CSV sheet, check every row, and add them in one go — then finish each from your inventory. You can still carry on here, one space at a time.</p>
+                    </div>
+                </div>
+                <Link href="/publisher/listings/bulk" className="inline-flex h-9 shrink-0 items-center rounded-md border border-line bg-white px-4 text-sm font-semibold text-ink hover:border-ink">
+                    Add many at once
+                </Link>
+            </div>
             <Note>
                 {kycVerified ? "Your business is verified. Business details are managed separately in Business profile." : "Listing a space for the first time? Your business verification is managed separately in Business profile."}
             </Note>
-        </div>
+        </>
     );
 }
 

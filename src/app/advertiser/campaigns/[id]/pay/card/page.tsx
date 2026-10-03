@@ -3,7 +3,10 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { messageOf } from "@/lib/api-client";
+import { isFeatureOff, messageOf } from "@/lib/api-client";
+import { FLAG_PAYMENT_GATEWAYS, useSwitchedOff } from "@/lib/flags";
+import { FeatureOff } from "@/components/platform/feature-off";
+import { AgeGate, useAgeGate } from "@/components/checkout/age-gate";
 import { BookingCard, ErrorNote, primaryButton, secondaryButton } from "@/components/booking/booking-frame";
 import { TextField } from "@/components/booking/fields";
 import { launchGateway, reserveCheckoutWindow, returnHref } from "@/components/booking/pay-launch";
@@ -16,7 +19,11 @@ import { GATEWAY_LABEL, paymentsService, pickGateway, type GatewayStatus } from 
  * card, the total including GST, "Authorise payment", "Choose another
  * method" and "Cancel and return to draft". The card number never touches
  * ADX: the fields are drawn as the frame has them but the gateway's secure
- * page, opened on Authorise, is where they are typed.
+ * page, opened on Authorise, is where they are typed. While the platform has
+ * `payments.gateways` switched off there is no card to authorise: one plain
+ * line, and the way back to the wallet on the previous page. 29 Sep 2026:
+ * the age gate asks for a missing date of birth before the gateway opens,
+ * and holds Authorise for someone under 18.
  */
 export default function CardPage({ params }: { params: Promise<{ id: string }> }) {
     const id = useCampaignId(params);
@@ -34,6 +41,8 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [fallback, setFallback] = React.useState<{ url: string; paymentId: string } | null>(null);
+    const gatewaysOff = useSwitchedOff(FLAG_PAYMENT_GATEWAYS);
+    const age = useAgeGate();
 
     React.useEffect(() => {
         let cancelled = false;
@@ -58,7 +67,8 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
     const payable = feePaid && reservation?.payable ? Number(reservation.payable) : charges.total;
 
     const authorise = async () => {
-        if (busy || !gateway) return;
+        /* Asked before the window is taken, so a missing date of birth never leaves an empty tab behind. */
+        if (busy || !gateway || gatewaysOff || !age.ready(() => void authorise())) return;
         setBusy(true);
         setError(null);
         const win = reserveCheckoutWindow();
@@ -72,10 +82,29 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
             router.push(returnHref(campaign.id, launched.intent.payment.id));
         } catch (caught) {
             win?.close();
-            setError(messageOf(caught, "Could not open the payment page."));
+            /* The kill switch says nothing here: the plain line replaces the card once the 503 lands. */
+            if (!age.caught(caught, () => void authorise())) setError(isFeatureOff(caught, FLAG_PAYMENT_GATEWAYS) ? null : messageOf(caught, "Could not open the payment page."));
             setBusy(false);
         }
     };
+
+    if (gatewaysOff) {
+        return (
+            <>
+                <FeatureOff flag={FLAG_PAYMENT_GATEWAYS}>Pay from your ADX wallet, or come back later.</FeatureOff>
+                <div className="mt-6 flex flex-wrap gap-3">
+                    <Link href={stepHref(campaign.id, "pay")} className={primaryButton}>
+                        Choose another method
+                    </Link>
+                </div>
+                <div className="mt-3">
+                    <Link href={stepHref(campaign.id, "review")} className={secondaryButton}>
+                        Cancel and return to draft
+                    </Link>
+                </div>
+            </>
+        );
+    }
 
     return (
         <>
@@ -96,6 +125,7 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
                 <p className="mt-4 text-sm text-dim">Your bank may ask you to approve this payment. If you cancel, your campaign draft will stay saved.</p>
                 {gateways && !gateway && <p className="mt-3 text-sm text-brand">No card gateway is set up yet — ask ADX, or pay by bank transfer from the previous page.</p>}
                 {gateway?.testMode && <p className="mt-3 text-xs text-dim">{GATEWAY_LABEL[gateway.gateway]} is in test mode: no real money moves.</p>}
+                <AgeGate gate={age} className="mt-4" />
                 <ErrorNote message={error} className="mt-4" />
                 {fallback && (
                     <div className="mt-4 rounded-md bg-brand-soft px-4 py-3 text-sm text-ink">
@@ -112,7 +142,7 @@ function CardDetails({ ready }: { ready: ReadyCampaign }) {
                 )}
             </BookingCard>
             <div className="mt-6 flex flex-wrap gap-3">
-                <button type="button" disabled={busy || !gateway} onClick={() => void authorise()} className={primaryButton}>
+                <button type="button" disabled={busy || !gateway || age.blocked} onClick={() => void authorise()} className={primaryButton}>
                     {busy ? "Opening…" : "Authorise payment"}
                 </button>
                 <Link href={stepHref(campaign.id, "pay")} className={secondaryButton}>

@@ -4,6 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { messageOf } from "@/lib/api-client";
+import { FLAG_LIVE_CHAT, useSwitchedOff } from "@/lib/flags";
+import { FeatureOff } from "@/components/platform/feature-off";
 import { PageHeading } from "@/components/workspace/page-heading";
 import { useAdvertiser } from "@/app/advertiser/layout";
 import { btnOutline, btnPrimary, btnSmall, DocRow, ErrorPanel, LoadingLine, StatusChip, useAsync } from "@/components/advertiser/bits";
@@ -18,18 +20,23 @@ import {
     ticketCampaignId,
     ticketReference,
     ticketStatusLabel,
-    ticketTopic,
     type CampaignDetail,
     type Invoice,
     type TicketMessage,
     type TicketThread,
 } from "@/services/advertiser-workspace";
+import { LiveChat } from "@/components/support/live-chat";
+import { PrivateFileLink } from "@/components/support/private-file";
+import { requestTopicOf } from "@/components/support/request-topics";
+import type { TicketThread as SupportThread } from "@/services/support";
 
 /**
  * DR 12 · 07 · 12 · Cancellation request received (5204:74921), and every
  * other request's own page: the request, the campaign it is about, what
  * happens next, the documents, and the conversation with ADX Support.
- * `GET /support/tickets/:id`, `POST …/reply`, `PATCH …/status`.
+ * `GET /support/tickets/:id`, `POST …/reply`, `PATCH …/status`. A live
+ * chat is handed to the chat — unless live chat is switched off, when it is
+ * drawn as a request like any other (those routes are not behind the switch).
  */
 export default function RequestPage() {
     return (
@@ -46,6 +53,7 @@ function Request() {
     const justSent = search.get("sent") === "1";
     const advertiser = useAdvertiser();
     const advertiserId = advertiser?.id ?? null;
+    const chatOff = useSwitchedOff(FLAG_LIVE_CHAT);
 
     const state = useAsync(
         `request:${ticketId}:${advertiserId ?? ""}`,
@@ -70,11 +78,23 @@ function Request() {
             </>
         );
     }
-    return <RequestView key={state.value.ticket.updatedAt} ticket={state.value.ticket} campaign={state.value.campaign} invoices={state.value.invoices} justSent={justSent} advertiserName={advertiser?.name ?? ""} advertiserId={advertiserId} reload={state.reload} />;
+    /* A request that turns out to be a live chat hands over to the chat, as the app does — while live chat is on. */
+    const liveChat = state.value.ticket.channel === "LIVE_CHAT";
+    if (liveChat && !chatOff) {
+        return (
+            <>
+                <PageHeading title="Live chat" subtitle="With ADX Support" />
+                <div className="mt-6 max-w-[860px]">
+                    <LiveChat party="ADVERTISER" initialTicket={state.value.ticket as unknown as SupportThread} />
+                </div>
+            </>
+        );
+    }
+    return <RequestView key={state.value.ticket.updatedAt} ticket={state.value.ticket} campaign={state.value.campaign} invoices={state.value.invoices} justSent={justSent} advertiserName={advertiser?.name ?? ""} advertiserId={advertiserId} reload={state.reload} liveChatOff={liveChat && chatOff} />;
 }
 
-function RequestView({ ticket, campaign, invoices, justSent, advertiserName, advertiserId, reload }: { ticket: TicketThread; campaign: CampaignDetail | null; invoices: Invoice[]; justSent: boolean; advertiserName: string; advertiserId: string | null; reload: () => void }) {
-    const topic = ticketTopic(ticket);
+function RequestView({ ticket, campaign, invoices, justSent, advertiserName, advertiserId, reload, liveChatOff = false }: { ticket: TicketThread; campaign: CampaignDetail | null; invoices: Invoice[]; justSent: boolean; advertiserName: string; advertiserId: string | null; reload: () => void; liveChatOff?: boolean }) {
+    const topic = requestTopicOf(ticket);
     const status = ticketStatusLabel(ticket.status);
     const cancellation = topic?.id === "CANCELLATION";
     const title = justSent ? (cancellation ? "Cancellation request sent" : "Request sent") : ticket.title;
@@ -127,6 +147,8 @@ function RequestView({ ticket, campaign, invoices, justSent, advertiserName, adv
     return (
         <>
             <PageHeading title={title} />
+            {/* A live chat read as a request while live chat is switched off says so above it. */}
+            {liveChatOff && <FeatureOff flag={FLAG_LIVE_CHAT} className="mt-6" />}
             <section className="mt-6 rounded-lg border border-line bg-white p-6">
                 <div className="flex flex-wrap items-center gap-3">
                     <h2 className="text-base font-semibold text-ink">
@@ -161,6 +183,9 @@ function RequestView({ ticket, campaign, invoices, justSent, advertiserName, adv
 
                 <Block label="Your request">
                     <p className="whitespace-pre-line text-sm text-dim">{ticket.description}</p>
+                    {ticket.attachmentUrls.map((url, index) => (
+                        <PrivateFileLink key={url} url={url} name={`Attachment ${index + 1}`} className="mt-2 text-ink" onError={setFailure} />
+                    ))}
                 </Block>
 
                 {(invoices.length > 0 || campaign) && (
@@ -241,7 +266,7 @@ function Message({ message, mine }: { message: TicketMessage; mine: boolean }) {
                 {mine ? "You" : message.authorName || "ADX Support"} <span className="font-normal text-dim">· {dateTime(message.createdAt)}</span>
             </p>
             {message.message && <p className="mt-1 whitespace-pre-line text-sm text-ink">{message.message}</p>}
-            {message.attachmentName && <p className="mt-1 text-xs text-dim">Attachment: {message.attachmentName}</p>}
+            {message.attachmentFileId ? <PrivateFileLink fileId={message.attachmentFileId} name={message.attachmentName ?? "Attachment"} className="mt-1 text-xs text-ink" /> : message.attachmentName && <p className="mt-1 text-xs text-dim">Attachment: {message.attachmentName}</p>}
         </li>
     );
 }

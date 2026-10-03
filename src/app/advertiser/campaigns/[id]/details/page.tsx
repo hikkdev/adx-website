@@ -20,6 +20,7 @@ import {
     type CampaignPatch,
     type CampaignStrategy,
 } from "@/services/booking";
+import { plannerService, type ContentCategory } from "@/services/planner";
 
 /**
  * Step 1 · Campaign brief (5204:62521): "Name your campaign" — the name and
@@ -59,6 +60,9 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
     const [market, setMarket] = React.useState(campaign.targetMarkets?.[0] ?? campaign.targetMarket ?? campaign.spots[0]?.listing.city ?? "");
     const [budget, setBudget] = React.useState(campaign.budget ? String(Math.round(Number(campaign.budget))) : review ? String(Math.ceil(Number(review.total))) : "");
     const [industries, setIndustries] = React.useState<string[]>([]);
+    /* Lot D (Q138): what the ad is about — every booked venue is checked against it. */
+    const [contentCategoryId, setContentCategoryId] = React.useState(campaign.contentCategoryId ?? "");
+    const [categories, setCategories] = React.useState<ContentCategory[] | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
@@ -68,6 +72,14 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
         bookingService.industries().then((rows) => {
             if (!cancelled) setIndustries(rows);
         });
+        plannerService
+            .contentCategories()
+            .then((rows) => {
+                if (!cancelled) setCategories(rows);
+            })
+            .catch(() => {
+                if (!cancelled) setCategories([]);
+            });
         return () => {
             cancelled = true;
         };
@@ -98,6 +110,7 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
                 productName: product.trim() || null,
                 industry: industry || null,
                 subCategory: subCategory.trim() || null,
+                ...(categories && categories.length > 0 ? { contentCategoryId: contentCategoryId || null } : {}),
                 goal: goal || null,
                 awareness: awareness || null,
                 persona: persona || null,
@@ -125,7 +138,7 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
             </BookingCard>
 
             <BookingCard className="mt-4" title="About the campaign" description="What the campaign is for. Your publisher and the review use these; nothing here changes the price.">
-                <div className="mt-6 grid gap-5 md:grid-cols-2">
+                <div className="mt-6 grid items-start gap-5 md:grid-cols-2">
                     <div id="section-brand" className="contents">
                         <TextField label="Product or offer" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Festive collection" maxLength={160} />
                         <SelectField label="Industry" value={industry} onChange={(e) => setIndustry(e.target.value)}>
@@ -137,6 +150,15 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
                             ))}
                         </SelectField>
                         <TextField label="Subcategory" value={subCategory} onChange={(e) => setSubCategory(e.target.value)} placeholder="Home furnishings" maxLength={120} />
+                        <SelectField label="What is the ad about?" value={contentCategoryId} onChange={(e) => setContentCategoryId(e.target.value)} disabled={!categories || categories.length === 0}>
+                            <option value="">{categories === null ? "Loading the categories…" : categories.length === 0 ? "No categories set up yet" : "Choose a category"}</option>
+                            {(categories ?? []).map((category) => (
+                                <option key={category.id} value={category.id}>
+                                    {category.name}
+                                    {category.isSensitive ? " (sensitive — some venues refuse it)" : ""}
+                                </option>
+                            ))}
+                        </SelectField>
                     </div>
                     <div id="section-goal" className="contents">
                         <SelectField label="Campaign goal" value={goal} onChange={(e) => setGoal(e.target.value as CampaignGoal | "")}>
@@ -175,16 +197,18 @@ function DetailsForm({ ready }: { ready: ReadyCampaign }) {
                         </SelectField>
                     </div>
                     <div id="section-targeting" className="contents">
-                        <TextField label="Market" value={market} onChange={(e) => setMarket(e.target.value)} placeholder="Bengaluru" maxLength={120} hint="The city your spaces are in." />
+                        <TextField label="Market" value={market} onChange={(e) => setMarket(e.target.value)} placeholder="Bengaluru" maxLength={120} />
                     </div>
                     <div id="section-schedule" className="contents">
-                        <TextField label="Planning budget (₹)" inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="50000" hint={fieldErrors.budget ?? (review ? `Your spaces come to ${rupees(review.total)} including GST.` : undefined)} />
+                        <TextField label="Planning budget (₹)" inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="50000" hint={fieldErrors.budget} />
                     </div>
+                    {/* Form symmetry: Market and the budget share a row, so their guidance is one line under the whole row; only a failed field shows its own line. */}
+                    <p className="-mt-3.5 text-xs text-dim md:col-span-2">Market is the city your spaces are in.{review ? ` Your spaces come to ${rupees(review.total)} including GST.` : ""}</p>
                 </div>
             </BookingCard>
 
             <ErrorNote message={error} className="mt-4" />
-            <StepFooter className="mt-6" back={{ href: "/advertiser", label: "Back" }} next={{ label: "Continue to artwork", onClick: () => void submit(), busy }} />
+            <StepFooter className="mt-6" back={{ href: "/advertiser/campaigns", label: "Back" }} next={{ label: "Continue to artwork", onClick: () => void submit(), busy }} />
         </>
     );
 }
